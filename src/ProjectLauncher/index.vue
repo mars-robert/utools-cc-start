@@ -74,6 +74,8 @@ const launch = (project: any) => {
     powershellPath: settings.powershellPath
   })
   if (result && result.success) {
+    // 记录最后使用的项目目录，供 ccrun 使用
+    window.services.saveLastProjectDir(project.cwd)
     window.utools.outPlugin()
   } else {
     error.value = (result && result.error) || '启动失败'

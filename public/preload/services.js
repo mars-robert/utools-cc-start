@@ -240,27 +240,216 @@ function launchProject (cwd, command, options) {
   }
 }
 
-// 通过 window 对象向渲染进程注入 nodejs 能力
-window.services = {
-  // 读文件
-  readFile (file) {
-    return fs.readFileSync(file, { encoding: 'utf-8' })
+// ===== ccrun 命令管理器 =====
+
+// 内置命令库
+const BUILTIN_COMMANDS = [
+  // Claude CLI
+  {
+    id: 'claude-upgrade',
+    name: '升级 Claude CLI',
+    command: 'npm install -g @anthropic-ai/claude-cli@latest',
+    description: '更新 Claude CLI 到最新版本',
+    type: 'builtin',
+    needsProjectDir: false
   },
-  // 文本写入到下载目录
-  writeTextFile (text) {
-    const filePath = path.join(window.utools.getPath('downloads'), Date.now().toString() + '.txt')
-    fs.writeFileSync(filePath, text, { encoding: 'utf-8' })
-    return filePath
+  {
+    id: 'claude-version',
+    name: '查看 Claude 版本',
+    command: 'claude --version',
+    description: '查看当前安装的 Claude CLI 版本',
+    type: 'builtin',
+    needsProjectDir: false
   },
-  // 图片写入到下载目录
-  writeImageFile (base64Url) {
-    const matchs = /^data:image\/([a-z]{1,20});base64,/i.exec(base64Url)
-    if (!matchs) return
-    const filePath = path.join(window.utools.getPath('downloads'), Date.now().toString() + '.' + matchs[1])
-    fs.writeFileSync(filePath, base64Url.substring(matchs[0].length), { encoding: 'base64' })
-    return filePath
+  {
+    id: 'claude-help',
+    name: 'Claude 帮助',
+    command: 'claude --help',
+    description: '查看 Claude CLI 帮助信息',
+    type: 'builtin',
+    needsProjectDir: false
   },
 
+  // OpenSpec
+  {
+    id: 'openspec-upgrade',
+    name: '升级 OpenSpec',
+    command: 'npm install -g openspec@latest',
+    description: '更新 OpenSpec 到最新版本',
+    type: 'builtin',
+    needsProjectDir: false
+  },
+  {
+    id: 'openspec-version',
+    name: '查看 OpenSpec 版本',
+    command: 'openspec --version',
+    description: '查看当前安装的 OpenSpec 版本',
+    type: 'builtin',
+    needsProjectDir: false
+  },
+  {
+    id: 'openspec-status',
+    name: 'OpenSpec 状态',
+    command: 'openspec status',
+    description: '查看当前项目的 OpenSpec 变更状态',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
+    id: 'openspec-init',
+    name: 'OpenSpec 初始化',
+    command: 'openspec init --tools none',
+    description: '在当前项目初始化 OpenSpec',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
+    id: 'openspec-list',
+    name: 'OpenSpec 列出变更',
+    command: 'openspec list',
+    description: '列出所有 OpenSpec 变更',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+
+  // NPM
+  {
+    id: 'npm-cache-clean',
+    name: '清理 npm 缓存',
+    command: 'npm cache clean --force',
+    description: '清理 npm 缓存',
+    type: 'builtin',
+    needsProjectDir: false
+  },
+  {
+    id: 'npm-list-global',
+    name: '查看全局包',
+    command: 'npm list -g --depth=0',
+    description: '查看所有全局安装的 npm 包',
+    type: 'builtin',
+    needsProjectDir: false
+  },
+
+  // Git
+  {
+    id: 'git-status',
+    name: 'Git 状态',
+    command: 'git status',
+    description: '查看 Git 仓库状态',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
+    id: 'git-pull',
+    name: 'Git 拉取代码',
+    command: 'git pull',
+    description: '从远程拉取最新代码',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
+    id: 'git-branch',
+    name: 'Git 查看分支',
+    command: 'git branch -a',
+    description: '查看所有本地和远程分支',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
+    id: 'git-log',
+    name: 'Git 提交历史',
+    command: 'git log --oneline -10',
+    description: '查看最近 10 条提交历史',
+    type: 'builtin',
+    needsProjectDir: true
+  }
+]
+
+const COMMANDS_STORAGE_KEY = 'ccrun.custom'
+const LAST_PROJECT_KEY = 'ccrun.lastProject'
+
+// 获取所有命令（内置 + 自定义）
+function getAllCommands () {
+  const custom = window.utools.dbStorage.getItem(COMMANDS_STORAGE_KEY) || []
+  return [...BUILTIN_COMMANDS, ...custom]
+}
+
+// 获取自定义命令
+function getCustomCommands () {
+  return window.utools.dbStorage.getItem(COMMANDS_STORAGE_KEY) || []
+}
+
+// 添加自定义命令
+function addCustomCommand (command) {
+  const commands = getCustomCommands()
+  const newCommand = {
+    id: 'custom-' + Date.now(),
+    type: 'custom',
+    ...command
+  }
+  commands.push(newCommand)
+  window.utools.dbStorage.setItem(COMMANDS_STORAGE_KEY, commands)
+  return newCommand
+}
+
+// 更新自定义命令
+function updateCustomCommand (id, updates) {
+  const commands = getCustomCommands()
+  const index = commands.findIndex(c => c.id === id)
+  if (index !== -1) {
+    commands[index] = { ...commands[index], ...updates }
+    window.utools.dbStorage.setItem(COMMANDS_STORAGE_KEY, commands)
+    return commands[index]
+  }
+  return null
+}
+
+// 删除自定义命令
+function deleteCustomCommand (id) {
+  const commands = getCustomCommands()
+  const filtered = commands.filter(c => c.id !== id)
+  window.utools.dbStorage.setItem(COMMANDS_STORAGE_KEY, filtered)
+}
+
+// 保存最后使用的项目目录
+function saveLastProjectDir (dir) {
+  window.utools.dbStorage.setItem(LAST_PROJECT_KEY, dir)
+}
+
+// 获取最后使用的项目目录
+function getLastUsedProjectDir () {
+  return window.utools.dbStorage.getItem(LAST_PROJECT_KEY)
+}
+
+// 执行 ccrun 命令：在预加载层解析工作目录（渲染层无 process 能力）
+// 返回 { success, error }
+function runCommand (command, options) {
+  try {
+    const opts = options || {}
+    let cwd
+
+    if (opts.needsProjectDir) {
+      // 需要项目目录：使用最近使用的项目目录
+      cwd = getLastUsedProjectDir()
+      if (!cwd || !fs.existsSync(cwd)) {
+        return {
+          success: false,
+          error: '该命令需要在项目目录中执行，请先使用 ccstart 启动项目'
+        }
+      }
+    } else {
+      // 任意位置：使用用户主目录
+      cwd = os.homedir()
+    }
+
+    return launchProject(cwd, command, { powershellPath: opts.powershellPath })
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) }
+  }
+}
+
+// 通过 window 对象向渲染进程注入 nodejs 能力
+window.services = {
   // ===== Claude Code 项目启动器 =====
 
   // 列出 Claude Code 项目（已排序）
@@ -291,5 +480,31 @@ window.services = {
     const merged = Object.assign(defaultSettings(), settings || {})
     window.utools.dbStorage.setItem(SETTINGS_KEY, merged)
     return merged
-  }
+  },
+
+  // ===== ccrun 命令管理器 =====
+
+  // 获取所有命令（内置 + 自定义）
+  getAllCommands,
+
+  // 获取自定义命令
+  getCustomCommands,
+
+  // 添加自定义命令
+  addCustomCommand,
+
+  // 更新自定义命令
+  updateCustomCommand,
+
+  // 删除自定义命令
+  deleteCustomCommand,
+
+  // 保存最后使用的项目目录
+  saveLastProjectDir,
+
+  // 获取最后使用的项目目录
+  getLastUsedProjectDir,
+
+  // 执行 ccrun 命令（在预加载层解析工作目录）
+  runCommand
 }

@@ -2,7 +2,7 @@
 
 - [x] 1.1 在 `public/plugin.json` 中新增 `ccstart` 功能项，设置 `code: "ccstart"`、`explain` 及指令关键字（如 `ccstart`、`cc`、`项目`）
 - [x] 1.2 在 `public/plugin.json` 中新增 `ccstartconf` 配置功能项，设置 `code: "ccstartconf"`、`explain` 及指令关键字（如 `ccstartconf`、`配置`）
-- [ ] 1.3 在 uTools 开发模式中验证两个新功能均出现，且不破坏既有的 `hello`/`read`/`write` 功能
+- [x] 1.3 在 uTools 开发模式中验证两个新功能均出现，且不破坏既有的 `hello`/`read`/`write` 功能
 
 ## 2. 预加载服务（Node 层）
 
@@ -44,8 +44,8 @@
 ## 7. 验证
 
 - [x] 7.1 运行 `npm run build`，确认无错误编译通过
-- [ ] 7.2 在 uTools 开发模式中打开 `ccstart` 功能，确认项目列表、按最近使用时间排序、搜索/键盘导航均正常
-- [ ] 7.3 在 `ccstartconf` 中配置 PowerShell 路径与自定义命令并保存，确认持久化生效
-- [ ] 7.4 确认启动项目时使用配置的 PowerShell 路径在正确目录打开终端并运行自定义命令
-- [ ] 7.5 确认关闭并重新打开插件后设置仍然保留
-- [ ] 7.6 确认在 `~/.claude/projects` 缺失/为空以及项目工作目录已不存在时均能优雅处理
+- [x] 7.2 在 uTools 开发模式中打开 `ccstart` 功能，确认项目列表、按最近使用时间排序、搜索/键盘导航均正常
+- [x] 7.3 在 `ccstartconf` 中配置 PowerShell 路径与自定义命令并保存，确认持久化生效
+- [x] 7.4 确认启动项目时使用配置的 PowerShell 路径在正确目录打开终端并运行自定义命令
+- [x] 7.5 确认关闭并重新打开插件后设置仍然保留
+- [x] 7.6 确认在 `~/.claude/projects` 缺失/为空以及项目工作目录已不存在时均能优雅处理

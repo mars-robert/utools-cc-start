@@ -8,55 +8,32 @@
   "features": [
     {
       "code": "ccstart",
-      "explain": "快速切换并启动 Claude Code 项目",
+      "explain": "启动 Claude Code 项目",
       "cmds": [
-        "ccstart",
         "cc",
-        "项目"
+        "ccstart"
       ]
     },
     {
       "code": "ccstartconf",
-      "explain": "配置 Claude Code 启动器（PowerShell 路径、自定义命令）",
+      "explain": "配置 Claude Code 启动器",
       "cmds": [
-        "ccstartconf",
-        "配置"
+        "cconf",
+        "ccstartconf"
       ]
     },
     {
-      "code": "hello",
-      "explain": "这是插件应用的第一个功能",
+      "code": "ccrun",
+      "explain": "执行常用开发命令",
       "cmds": [
-        "你好",
-        "hello"
+        "ccrun"
       ]
     },
     {
-      "code": "read",
-      "explain": "功能指令+匹配指令示例，使用 node.js 能力读文件",
+      "code": "ccrun-manage",
+      "explain": "管理自定义命令",
       "cmds": [
-        "读文件",
-        {
-          "type": "files",
-          "fileType": "file",
-          "maxLength": 1,
-          "label": "读文件"
-        }
-      ]
-    },
-    {
-      "code": "write",
-      "explain": "匹配指令示例，使用 node.js 能力写文件",
-      "mainHide": true,
-      "cmds": [
-        {
-          "type": "over",
-          "label": "保存为文件"
-        },
-        {
-          "type": "img",
-          "label": "保存为文件"
-        }
+        "管理命令"
       ]
     }
   ]
