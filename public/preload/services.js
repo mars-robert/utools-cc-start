@@ -3,6 +3,10 @@ const path = require('node:path')
 const os = require('node:os')
 const { spawn } = require('node:child_process')
 
+function loadClaudeConfigHelpers () {
+  return require('./claude-config.js')
+}
+
 // ===== Claude Code 项目启动器：设置存储 =====
 
 const SETTINGS_KEY = 'ccstart.settings'
@@ -23,10 +27,62 @@ function detectDefaultPowershell () {
   return 'powershell.exe'
 }
 
-function defaultSettings () {
+// 探测 PowerShell 7 (pwsh) 路径
+function detectPwsh7 () {
+  if (process.platform !== 'win32') return 'pwsh'
+  const candidate = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe')
+  try { if (fs.existsSync(candidate)) return candidate } catch (_) { /* 忽略 */ }
+  return 'pwsh.exe'
+}
+
+// 探测 Windows PowerShell 5.1 路径
+function detectWinPowershell () {
+  if (process.platform !== 'win32') return 'powershell'
+  const candidate = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  try { if (fs.existsSync(candidate)) return candidate } catch (_) { /* 忽略 */ }
+  return 'powershell.exe'
+}
+
+// ===== 内置预设：启动命令与终端 =====
+
+const BUILTIN_LAUNCH_COMMANDS = [
+  { id: 'lc-claude', label: 'Claude', command: 'claude' },
+  { id: 'lc-continue', label: 'Claude 继续上次会话 (--continue)', command: 'claude --continue' },
+  { id: 'lc-resume', label: 'Claude 恢复会话 (--resume)', command: 'claude --resume' },
+  { id: 'lc-skip', label: 'Claude 跳过权限确认 (--dangerously-skip-permissions)', command: 'claude --dangerously-skip-permissions' }
+]
+
+const BUILTIN_TERMINALS = [
+  { id: 'bt-powershell', label: 'Windows PowerShell', type: 'powershell' },
+  { id: 'bt-wt', label: 'Windows Terminal', type: 'wt' },
+  { id: 'bt-pwsh', label: 'PowerShell 7 (pwsh)', type: 'pwsh' },
+  { id: 'bt-cmd', label: 'CMD', type: 'cmd' }
+]
+
+// 将终端项解析为运行时 { powershellPath, terminalType }
+function resolveTerminal (term) {
+  if (!term) return { powershellPath: detectDefaultPowershell(), terminalType: undefined }
+  switch (term.type) {
+    case 'powershell': return { powershellPath: detectWinPowershell(), terminalType: 'powershell' }
+    case 'pwsh': return { powershellPath: detectPwsh7(), terminalType: 'pwsh' }
+    case 'wt': return { powershellPath: 'wt.exe', terminalType: 'wt' }
+    case 'cmd': return { powershellPath: '', terminalType: 'cmd' }
+    case 'custom': return { powershellPath: term.path || '', terminalType: 'custom' }
+    default: return { powershellPath: detectDefaultPowershell(), terminalType: undefined }
+  }
+}
+
+const SETTINGS_VERSION = 2
+
+// 默认持久化结构（v2）
+function defaultPersisted () {
   return {
-    launchCommand: 'claude',
-    powershellPath: detectDefaultPowershell()
+    version: SETTINGS_VERSION,
+    customLaunchCommands: [],
+    selectedLaunchId: 'lc-claude',
+    customTerminals: [],
+    selectedTerminalId: 'bt-powershell',
+    terminalPathOverrides: {} // { [builtinId]: customPath }
   }
 }
 
@@ -170,17 +226,25 @@ function isWindowsTerminal (psPath) {
 }
 
 function launchWindows (cwd, command, options) {
-  const psPath = (options && options.powershellPath) || detectDefaultPowershell()
+  const opts = options || {}
+  const psPath = opts.powershellPath || detectDefaultPowershell()
+  // 显式终端类型优先；custom / 未提供时回退到路径启发式
+  let type = opts.terminalType
+  if (!type) type = isWindowsTerminal(psPath) ? 'wt' : 'powershell'
+  if (type === 'custom') type = isWindowsTerminal(psPath) ? 'wt' : 'powershell'
 
-  // 判断是使用 Windows Terminal 还是标准 PowerShell
-  if (isWindowsTerminal(psPath)) {
-    // Windows Terminal parses semicolons in its command line; keep cwd and command
-    // as native arguments so a command like "claude" is not treated as a new tab.
+  if (type === 'wt') {
+    // Windows Terminal：保持 cwd 与命令为原生参数，避免分号被解析为新标签
+    const wtBin = psPath || 'wt.exe'
     const args = ['-d', cwd, 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', command]
-    return spawn(psPath, args, { detached: true, stdio: 'ignore' })
+    return spawn(wtBin, args, { detached: true, stdio: 'ignore' })
+  } else if (type === 'cmd') {
+    // CMD：新窗口进入目录后执行命令并保持窗口（/k）
+    const inner = `cd /d "${cwd}" && ${command}`
+    const args = ['/c', 'start', '""', 'cmd.exe', '/k', inner]
+    return spawn('cmd.exe', args, { detached: true, stdio: 'ignore', windowsVerbatimArguments: false })
   } else {
-    // 标准 PowerShell 模式：通过 cmd 的 start 打开新窗口
-    // 进入目录后运行命令，并保持窗口（NoExit）
+    // PowerShell / pwsh：通过 cmd 的 start 打开新窗口，进入目录后运行命令并保持窗口
     const inner = `Set-Location -LiteralPath '${cwd.replace(/'/g, "''")}'; ${command}`
     const args = ['/c', 'start', '""', psPath, '-NoExit', '-Command', inner]
     return spawn('cmd.exe', args, { detached: true, stdio: 'ignore', windowsVerbatimArguments: false })
@@ -366,12 +430,34 @@ const BUILTIN_COMMANDS = [
 ]
 
 const COMMANDS_STORAGE_KEY = 'ccrun.custom'
+const OVERRIDES_STORAGE_KEY = 'ccrun.overrides'
 const LAST_PROJECT_KEY = 'ccrun.lastProject'
 
-// 获取所有命令（内置 + 自定义）
+// 读取内置命令覆盖层 { [builtinId]: { deleted?, name?, command?, description?, needsProjectDir? } }
+function getBuiltinOverrides () {
+  return window.utools.dbStorage.getItem(OVERRIDES_STORAGE_KEY) || {}
+}
+
+function setBuiltinOverrides (overrides) {
+  window.utools.dbStorage.setItem(OVERRIDES_STORAGE_KEY, overrides || {})
+}
+
+// 获取所有命令（内置 + 覆盖层 + 自定义）
 function getAllCommands () {
+  const overrides = getBuiltinOverrides()
   const custom = window.utools.dbStorage.getItem(COMMANDS_STORAGE_KEY) || []
-  return [...BUILTIN_COMMANDS, ...custom]
+  const builtins = []
+  for (const base of BUILTIN_COMMANDS) {
+    const ov = overrides[base.id]
+    if (ov && ov.deleted) continue // 已删除
+    if (ov) {
+      const { deleted, ...patch } = ov
+      builtins.push({ ...base, ...patch, modified: true })
+    } else {
+      builtins.push({ ...base })
+    }
+  }
+  return [...builtins, ...custom]
 }
 
 // 获取自定义命令
@@ -411,6 +497,41 @@ function deleteCustomCommand (id) {
   window.utools.dbStorage.setItem(COMMANDS_STORAGE_KEY, filtered)
 }
 
+// ---- 内置命令覆盖层增删改 ----
+
+// 修改内置命令（以覆盖层记录）
+function updateBuiltinCommand (id, patch) {
+  if (!BUILTIN_COMMANDS.some((c) => c.id === id)) return null
+  const overrides = getBuiltinOverrides()
+  const prev = overrides[id] && !overrides[id].deleted ? overrides[id] : {}
+  const allowed = {}
+  for (const k of ['name', 'command', 'description', 'needsProjectDir']) {
+    if (patch[k] !== undefined) allowed[k] = patch[k]
+  }
+  overrides[id] = { ...prev, ...allowed }
+  setBuiltinOverrides(overrides)
+  return overrides[id]
+}
+
+// 删除内置命令（以覆盖层标记）
+function deleteBuiltinCommand (id) {
+  if (!BUILTIN_COMMANDS.some((c) => c.id === id)) return false
+  const overrides = getBuiltinOverrides()
+  overrides[id] = { deleted: true }
+  setBuiltinOverrides(overrides)
+  return true
+}
+
+// 恢复内置命令默认（移除覆盖层记录）
+function resetBuiltinCommand (id) {
+  const overrides = getBuiltinOverrides()
+  if (overrides[id]) {
+    delete overrides[id]
+    setBuiltinOverrides(overrides)
+  }
+  return true
+}
+
 // 保存最后使用的项目目录
 function saveLastProjectDir (dir) {
   window.utools.dbStorage.setItem(LAST_PROJECT_KEY, dir)
@@ -429,7 +550,6 @@ function runCommand (command, options) {
     let cwd
 
     if (opts.needsProjectDir) {
-      // 需要项目目录：使用最近使用的项目目录
       cwd = getLastUsedProjectDir()
       if (!cwd || !fs.existsSync(cwd)) {
         return {
@@ -438,14 +558,195 @@ function runCommand (command, options) {
         }
       }
     } else {
-      // 任意位置：使用用户主目录
       cwd = os.homedir()
     }
 
-    return launchProject(cwd, command, { powershellPath: opts.powershellPath })
+    return launchProject(cwd, command, {
+      powershellPath: opts.powershellPath,
+      terminalType: opts.terminalType
+    })
   } catch (err) {
     return { success: false, error: err && err.message ? err.message : String(err) }
   }
+}
+
+// ===== 启动器设置：v2 列表模型读写与迁移 =====
+
+// 读取持久化结构（带迁移）。返回 v2 形态。
+function readPersisted () {
+  let raw = null
+  try { raw = window.utools.dbStorage.getItem(SETTINGS_KEY) } catch (_) { raw = null }
+  if (!raw || typeof raw !== 'object') return defaultPersisted()
+
+  // 已是 v2
+  if (raw.version === SETTINGS_VERSION) {
+    return Object.assign(defaultPersisted(), raw)
+  }
+
+  // 旧结构迁移：{ launchCommand, powershellPath }
+  const migrated = defaultPersisted()
+  const oldCmd = (raw.launchCommand || '').trim()
+  if (oldCmd && !BUILTIN_LAUNCH_COMMANDS.some((c) => c.command === oldCmd)) {
+    const id = 'lc-custom-legacy'
+    migrated.customLaunchCommands.push({ id, label: oldCmd, command: oldCmd })
+    migrated.selectedLaunchId = id
+  } else if (oldCmd) {
+    const hit = BUILTIN_LAUNCH_COMMANDS.find((c) => c.command === oldCmd)
+    migrated.selectedLaunchId = hit ? hit.id : 'lc-claude'
+  }
+
+  const oldPath = (raw.powershellPath || '').trim()
+  if (oldPath) {
+    if (isWindowsTerminal(oldPath)) {
+      migrated.selectedTerminalId = 'bt-wt'
+    } else if (oldPath === detectWinPowershell()) {
+      migrated.selectedTerminalId = 'bt-powershell'
+    } else if (oldPath === detectPwsh7()) {
+      migrated.selectedTerminalId = 'bt-pwsh'
+    } else {
+      const id = 'bt-custom-legacy'
+      migrated.customTerminals.push({ id, label: oldPath, type: 'custom', path: oldPath })
+      migrated.selectedTerminalId = id
+    }
+  }
+  return migrated
+}
+
+function writePersisted (persisted) {
+  const merged = Object.assign(defaultPersisted(), persisted || {})
+  merged.version = SETTINGS_VERSION
+  window.utools.dbStorage.setItem(SETTINGS_KEY, merged)
+  return merged
+}
+
+// 合并内置 + 自定义的完整列表
+function getLaunchCommandList (persisted) {
+  const p = persisted || readPersisted()
+  return [
+    ...BUILTIN_LAUNCH_COMMANDS.map((c) => ({ ...c, builtin: true })),
+    ...p.customLaunchCommands.map((c) => ({ ...c, builtin: false }))
+  ]
+}
+
+function getTerminalList (persisted) {
+  const p = persisted || readPersisted()
+  const overrides = p.terminalPathOverrides || {}
+  return [
+    ...BUILTIN_TERMINALS.map((t) => {
+      const resolved = resolveTerminal(t)
+      const finalPath = overrides[t.id] || resolved.powershellPath
+      return { ...t, builtin: true, resolvedPath: finalPath }
+    }),
+    ...p.customTerminals.map((t) => ({ ...t, builtin: false, resolvedPath: t.path || '' }))
+  ]
+}
+
+// 派生运行时设置：供 launchProject/runCommand 使用，签名不变
+function getLauncherSettings () {
+  const p = readPersisted()
+  const cmds = getLaunchCommandList(p)
+  const terms = getTerminalList(p)
+  const selCmd = cmds.find((c) => c.id === p.selectedLaunchId) || cmds[0]
+  const selTerm = terms.find((t) => t.id === p.selectedTerminalId) || terms[0]
+  const resolved = resolveTerminal(selTerm)
+  // selTerm.resolvedPath 已包含预设路径覆盖；优先使用它作为运行时路径
+  const runtimePath = (selTerm && selTerm.resolvedPath) || resolved.powershellPath
+  return {
+    // 运行时字段（兼容旧调用处）
+    launchCommand: (selCmd && selCmd.command) || 'claude',
+    powershellPath: runtimePath,
+    terminalType: resolved.terminalType,
+    // 完整模型（供配置界面使用）
+    launchCommands: cmds,
+    selectedLaunchId: selCmd ? selCmd.id : 'lc-claude',
+    terminals: terms,
+    selectedTerminalId: selTerm ? selTerm.id : 'bt-powershell'
+  }
+}
+
+// ---- 启动命令项增删改 ----
+function setSelectedLaunchId (id) {
+  const p = readPersisted()
+  p.selectedLaunchId = id
+  return writePersisted(p)
+}
+
+function addLaunchCommand (item) {
+  const p = readPersisted()
+  const newItem = { id: 'lc-custom-' + Date.now(), label: item.label || item.command, command: item.command }
+  p.customLaunchCommands.push(newItem)
+  writePersisted(p)
+  return newItem
+}
+
+function updateLaunchCommand (id, patch) {
+  const p = readPersisted()
+  const idx = p.customLaunchCommands.findIndex((c) => c.id === id)
+  if (idx === -1) return null // 内置项不可改
+  p.customLaunchCommands[idx] = { ...p.customLaunchCommands[idx], ...patch, id }
+  writePersisted(p)
+  return p.customLaunchCommands[idx]
+}
+
+function deleteLaunchCommand (id) {
+  if (BUILTIN_LAUNCH_COMMANDS.some((c) => c.id === id)) return false // 内置不可删
+  const p = readPersisted()
+  p.customLaunchCommands = p.customLaunchCommands.filter((c) => c.id !== id)
+  if (p.selectedLaunchId === id) p.selectedLaunchId = 'lc-claude'
+  writePersisted(p)
+  return true
+}
+
+// ---- 终端项增删改 ----
+function setSelectedTerminalId (id) {
+  const p = readPersisted()
+  p.selectedTerminalId = id
+  return writePersisted(p)
+}
+
+function addTerminal (item) {
+  const p = readPersisted()
+  const newItem = { id: 'bt-custom-' + Date.now(), label: item.label || item.path, type: 'custom', path: item.path }
+  p.customTerminals.push(newItem)
+  writePersisted(p)
+  return newItem
+}
+
+function updateTerminal (id, patch) {
+  const p = readPersisted()
+  const idx = p.customTerminals.findIndex((t) => t.id === id)
+  if (idx === -1) return null // 预设不可改
+  p.customTerminals[idx] = { ...p.customTerminals[idx], ...patch, id, type: 'custom' }
+  writePersisted(p)
+  return p.customTerminals[idx]
+}
+
+function deleteTerminal (id) {
+  if (BUILTIN_TERMINALS.some((t) => t.id === id)) return false // 预设不可删
+  const p = readPersisted()
+  p.customTerminals = p.customTerminals.filter((t) => t.id !== id)
+  if (p.selectedTerminalId === id) p.selectedTerminalId = 'bt-powershell'
+  writePersisted(p)
+  return true
+}
+
+// ---- 终端路径覆盖（预设项路径可编辑）----
+function setTerminalPathOverride (id, path) {
+  if (!BUILTIN_TERMINALS.some((t) => t.id === id)) return false // 仅预设项可覆盖
+  const p = readPersisted()
+  if (!p.terminalPathOverrides) p.terminalPathOverrides = {}
+  p.terminalPathOverrides[id] = path
+  writePersisted(p)
+  return true
+}
+
+function clearTerminalPathOverride (id) {
+  const p = readPersisted()
+  if (p.terminalPathOverrides && p.terminalPathOverrides[id]) {
+    delete p.terminalPathOverrides[id]
+    writePersisted(p)
+  }
+  return true
 }
 
 // 通过 window 对象向渲染进程注入 nodejs 能力
@@ -463,41 +764,58 @@ window.services = {
     try { return !!p && fs.existsSync(p) } catch (_) { return false }
   },
 
-  // 读取启动器设置（带默认值）
-  getLauncherSettings () {
-    const defaults = defaultSettings()
-    try {
-      const saved = window.utools.dbStorage.getItem(SETTINGS_KEY)
-      if (saved && typeof saved === 'object') {
-        return Object.assign(defaults, saved)
-      }
-    } catch (_) { /* 忽略，使用默认值 */ }
-    return defaults
+  // ===== Claude config file I/O =====
+
+  getClaudeConfigPath () {
+    return loadClaudeConfigHelpers().getClaudeConfigPath()
   },
 
-  // 保存启动器设置
-  saveLauncherSettings (settings) {
-    const merged = Object.assign(defaultSettings(), settings || {})
-    window.utools.dbStorage.setItem(SETTINGS_KEY, merged)
-    return merged
+  readClaudeConfigFile () {
+    return loadClaudeConfigHelpers().readClaudeConfigFile()
   },
+
+  backupClaudeConfigFile () {
+    return loadClaudeConfigHelpers().backupClaudeConfigFile()
+  },
+
+  saveClaudeConfigFile (nextData) {
+    return loadClaudeConfigHelpers().writeClaudeConfigFile(nextData)
+  },
+
+  // ===== 启动器设置（v2 列表模型） =====
+
+  // 读取派生运行时设置 + 完整模型
+  getLauncherSettings,
+
+  // 启动命令项管理
+  setSelectedLaunchId,
+  addLaunchCommand,
+  updateLaunchCommand,
+  deleteLaunchCommand,
+
+  // 终端项管理
+  setSelectedTerminalId,
+  addTerminal,
+  updateTerminal,
+  deleteTerminal,
+  setTerminalPathOverride,
+  clearTerminalPathOverride,
 
   // ===== ccrun 命令管理器 =====
 
-  // 获取所有命令（内置 + 自定义）
+  // 获取所有命令（内置 + 覆盖层 + 自定义）
   getAllCommands,
 
-  // 获取自定义命令
+  // 自定义命令
   getCustomCommands,
-
-  // 添加自定义命令
   addCustomCommand,
-
-  // 更新自定义命令
   updateCustomCommand,
-
-  // 删除自定义命令
   deleteCustomCommand,
+
+  // 内置命令覆盖层
+  updateBuiltinCommand,
+  deleteBuiltinCommand,
+  resetBuiltinCommand,
 
   // 保存最后使用的项目目录
   saveLastProjectDir,
