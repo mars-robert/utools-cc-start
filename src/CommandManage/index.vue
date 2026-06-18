@@ -1,13 +1,6 @@
 <script lang="ts" setup>
 import { ref, onMounted } from 'vue'
 
-defineProps({
-  enterAction: {
-    type: Object,
-    required: true
-  }
-})
-
 const commands = ref<any[]>([])
 const showAddDialog = ref(false)
 const editingCommand = ref<any>(null)
@@ -20,17 +13,14 @@ const formData = ref({
 })
 
 const loadCommands = () => {
-  commands.value = window.services.getCustomCommands()
+  commands.value = window.services.getAllCommands()
 }
+
+const isBuiltin = (cmd: any) => cmd.type === 'builtin'
 
 const openAddDialog = () => {
   editingCommand.value = null
-  formData.value = {
-    name: '',
-    command: '',
-    description: '',
-    needsProjectDir: false
-  }
+  formData.value = { name: '', command: '', description: '', needsProjectDir: false }
   showAddDialog.value = true
 }
 
@@ -50,56 +40,57 @@ const saveCommand = () => {
     window.utools.showNotification('名称和命令不能为空')
     return
   }
-
   if (editingCommand.value) {
-    // 更新
-    window.services.updateCustomCommand(editingCommand.value.id, formData.value)
+    if (isBuiltin(editingCommand.value)) {
+      window.services.updateBuiltinCommand(editingCommand.value.id, { ...formData.value })
+    } else {
+      window.services.updateCustomCommand(editingCommand.value.id, { ...formData.value })
+    }
   } else {
-    // 添加
-    window.services.addCustomCommand(formData.value)
+    window.services.addCustomCommand({ ...formData.value })
   }
-
   showAddDialog.value = false
   loadCommands()
 }
 
 const deleteCommand = (cmd: any) => {
-  // 使用简单的确认方式
-  const confirmed = window.confirm(`确定删除命令 "${cmd.name}" 吗？`)
-  if (confirmed) {
+  if (!window.confirm(`确定删除命令 "${cmd.name}" 吗？`)) return
+  if (isBuiltin(cmd)) {
+    window.services.deleteBuiltinCommand(cmd.id)
+  } else {
     window.services.deleteCustomCommand(cmd.id)
-    loadCommands()
   }
-}
-
-const closeDialog = () => {
-  showAddDialog.value = false
-}
-
-onMounted(() => {
   loadCommands()
-})
+}
+
+const resetCommand = (cmd: any) => {
+  window.services.resetBuiltinCommand(cmd.id)
+  loadCommands()
+}
+
+const closeDialog = () => { showAddDialog.value = false }
+
+onMounted(loadCommands)
 </script>
+
 
 <template>
   <div class="command-manage">
-    <h2>管理自定义命令</h2>
-
-    <div v-if="commands.length === 0" class="empty">
-      还没有自定义命令，点击下方按钮添加
-    </div>
-
-    <ul v-else class="command-list">
+    <ul class="command-list">
       <li v-for="cmd in commands" :key="cmd.id">
         <div class="command-info">
           <div class="command-name">
-            {{ cmd.needsProjectDir ? '📂' : '⚡' }} {{ cmd.name }}
+            {{ cmd.name }}
+            <span v-if="cmd.type === 'custom'" class="badge">自定义</span>
+            <span v-else-if="cmd.modified" class="badge modified">已修改</span>
+            <span v-else class="badge builtin">内置</span>
           </div>
           <div class="command-text">{{ cmd.command }}</div>
           <div v-if="cmd.description" class="command-desc">{{ cmd.description }}</div>
         </div>
         <div class="command-actions">
           <button @click="openEditDialog(cmd)">编辑</button>
+          <button v-if="cmd.modified" @click="resetCommand(cmd)">恢复默认</button>
           <button @click="deleteCommand(cmd)" class="danger">删除</button>
         </div>
       </li>
@@ -145,75 +136,102 @@ onMounted(() => {
 
 <style scoped>
 .command-manage {
-  padding: 20px;
   max-width: 800px;
   margin: 0 auto;
 }
 
+.badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #e8f0ff;
+  color: var(--primary-color);
+  margin-left: 6px;
+  font-weight: 400;
+}
+
+.badge.builtin { background: var(--bg-hover); color: var(--text-tertiary); }
+.badge.modified { background: #fff3e0; color: #ef6c00; }
+
 h2 {
-  font-size: 18px;
-  margin-bottom: 20px;
+  font-size: var(--font-size-lg);
+  margin-bottom: var(--spacing-xl);
+  color: var(--text-primary);
 }
 
 .empty {
   text-align: center;
   padding: 40px 20px;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .command-list {
   list-style: none;
   padding: 0;
-  margin: 0 0 20px 0;
+  margin: 0 0 var(--spacing-xl) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
 }
 
 .command-list li {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px;
-  margin-bottom: 8px;
-  border: 1px solid #e0e0e0;
-  border-radius: 6px;
+  padding: var(--spacing-lg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--card-bg);
+  transition: all 0.2s ease;
+}
+
+.command-list li:hover {
+  box-shadow: var(--card-shadow);
+  border-color: var(--primary-color);
 }
 
 .command-info {
   flex: 1;
+  min-width: 0;
 }
 
 .command-name {
   font-weight: 600;
-  margin-bottom: 4px;
+  margin-bottom: var(--spacing-xs);
+  color: var(--text-primary);
 }
 
 .command-text {
   font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 12px;
-  color: #666;
-  margin-bottom: 4px;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  margin-bottom: var(--spacing-xs);
 }
 
 .command-desc {
   font-size: 11px;
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 .command-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--spacing-sm);
+  flex: 0 0 auto;
 }
 
 button {
-  padding: 6px 12px;
-  border: 1px solid #ddd;
+  padding: 3px 8px;
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-  background: #fff;
+  background: var(--card-bg);
+  color: var(--text-primary);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
+  transition: all 0.2s ease;
 }
 
 button:hover {
-  background: #f5f5f5;
+  background: var(--bg-hover);
 }
 
 button.danger {
@@ -227,23 +245,21 @@ button.danger:hover {
 
 .add-btn {
   width: 100%;
-  padding: 12px;
-  font-size: 14px;
-  background: #4f8cff;
+  padding: 8px;
+  font-size: 13px;
+  background: var(--primary-color);
   color: #fff;
   border: none;
+  border-radius: 6px;
 }
 
 .add-btn:hover {
-  background: #3b78f0;
+  background: var(--primary-hover);
 }
 
 .dialog-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
@@ -252,28 +268,30 @@ button.danger:hover {
 }
 
 .dialog {
-  background: #fff;
-  border-radius: 8px;
-  padding: 20px;
+  background: var(--card-bg);
+  border-radius: var(--card-radius);
+  padding: var(--spacing-xl);
   width: 90%;
   max-width: 500px;
   max-height: 80vh;
   overflow-y: auto;
+  box-shadow: var(--card-hover-shadow);
+  color: var(--text-primary);
 }
 
 .dialog h3 {
   margin-top: 0;
-  margin-bottom: 16px;
+  margin-bottom: var(--spacing-lg);
 }
 
 .form-field {
-  margin-bottom: 16px;
+  margin-bottom: var(--spacing-lg);
 }
 
 .form-field label {
   display: block;
-  margin-bottom: 4px;
-  font-size: 13px;
+  margin-bottom: var(--spacing-xs);
+  font-size: var(--font-size-sm);
   font-weight: 600;
 }
 
@@ -281,16 +299,20 @@ button.danger:hover {
 .form-field input:not([type="checkbox"]) {
   width: 100%;
   padding: 8px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-size: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: var(--font-size-base);
   box-sizing: border-box;
+  background: var(--card-bg);
+  color: var(--text-primary);
 }
+
+.form-field input:focus { border-color: var(--primary-color); outline: none; }
 
 .form-field.checkbox label {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--spacing-sm);
   font-weight: normal;
 }
 
@@ -300,57 +322,18 @@ button.danger:hover {
 
 .dialog-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--spacing-sm);
   justify-content: flex-end;
-  margin-top: 20px;
+  margin-top: var(--spacing-xl);
 }
 
 .dialog-actions button.primary {
-  background: #4f8cff;
+  background: var(--primary-color);
   color: #fff;
-  border-color: #4f8cff;
+  border-color: var(--primary-color);
 }
 
 .dialog-actions button.primary:hover {
-  background: #3b78f0;
-}
-
-@media (prefers-color-scheme: dark) {
-  .command-manage {
-    color: #e0e0e0;
-  }
-
-  .command-list li {
-    border-color: #3a3a3a;
-  }
-
-  .command-text {
-    color: #aaa;
-  }
-
-  .command-desc {
-    color: #888;
-  }
-
-  button {
-    background: #2a2a2a;
-    border-color: #3a3a3a;
-    color: #e0e0e0;
-  }
-
-  button:hover {
-    background: #3a3a3a;
-  }
-
-  .dialog {
-    background: #1e1e1e;
-    color: #e0e0e0;
-  }
-
-  .form-field input {
-    background: #2a2a2a;
-    border-color: #3a3a3a;
-    color: #e0e0e0;
-  }
+  background: var(--primary-hover);
 }
 </style>

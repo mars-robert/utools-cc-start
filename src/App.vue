@@ -1,9 +1,8 @@
 <script lang="ts" setup>
 import { onMounted, ref } from 'vue';
 import ProjectLauncher from './ProjectLauncher/index.vue'
-import LauncherConfig from './LauncherConfig/index.vue'
+import UnifiedConfig from './UnifiedConfig/index.vue'
 import CommandList from './CommandList/index.vue'
-import CommandManage from './CommandManage/index.vue'
 
 const route = ref('')
 const enterAction = ref({})
@@ -24,12 +23,9 @@ onMounted(() => {
     <ProjectLauncher :enterAction="enterAction"></ProjectLauncher>
   </template>
   <template v-if="route === 'ccstartconf'">
-    <LauncherConfig :enterAction="enterAction"></LauncherConfig>
+    <UnifiedConfig :enterAction="enterAction"></UnifiedConfig>
   </template>
   <template v-if="route === 'ccrun'">
     <CommandList :enterAction="enterAction"></CommandList>
-  </template>
-  <template v-if="route === 'ccrun-manage'">
-    <CommandManage :enterAction="enterAction"></CommandManage>
   </template>
 </template>

@@ -215,25 +215,6 @@ onUnmounted(() => {
   scroll-padding-bottom: 10px;
 }
 
-.launcher-list::-webkit-scrollbar {
-  width: 6px;
-}
-
-.launcher-list::-webkit-scrollbar-track,
-.launcher-list::-webkit-scrollbar-track-piece {
-  background-color: transparent;
-}
-
-.launcher-list::-webkit-scrollbar-thumb {
-  background-color: rgba(144, 147, 153, 0.5);
-  border: none;
-  border-radius: 3px;
-}
-
-.launcher-list::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(144, 147, 153, 0.8);
-}
-
 .launcher-item {
   display: flex;
   align-items: center;

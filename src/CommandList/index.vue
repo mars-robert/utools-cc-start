@@ -187,25 +187,6 @@ onUnmounted(() => {
   scroll-padding-bottom: 10px;
 }
 
-.command-list-items::-webkit-scrollbar {
-  width: 6px;
-}
-
-.command-list-items::-webkit-scrollbar-track,
-.command-list-items::-webkit-scrollbar-track-piece {
-  background-color: transparent;
-}
-
-.command-list-items::-webkit-scrollbar-thumb {
-  background-color: rgba(144, 147, 153, 0.5);
-  border: none;
-  border-radius: 3px;
-}
-
-.command-list-items::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(144, 147, 153, 0.8);
-}
-
 .command-item {
   padding: 8px 12px;
   border-radius: 5px;

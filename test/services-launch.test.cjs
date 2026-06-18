@@ -4,7 +4,7 @@ const path = require('node:path')
 const test = require('node:test')
 const vm = require('node:vm')
 
-function loadServices ({ platform = 'win32', exists = () => true } = {}) {
+function loadServices ({ platform = 'win32', exists = () => true, store = {} } = {}) {
   const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'preload', 'services.js'), 'utf8')
   const spawns = []
   const sandbox = {
@@ -40,8 +40,8 @@ function loadServices ({ platform = 'win32', exists = () => true } = {}) {
     window: {
       utools: {
         dbStorage: {
-          getItem: () => null,
-          setItem: () => {}
+          getItem: (k) => (k in store ? store[k] : null),
+          setItem: (k, v) => { store[k] = v }
         },
         getPath: () => 'C:\\Users\\tester\\Downloads'
       }
@@ -49,7 +49,7 @@ function loadServices ({ platform = 'win32', exists = () => true } = {}) {
   }
 
   vm.runInNewContext(source, sandbox, { filename: 'services.js' })
-  return { services: sandbox.window.services, spawns }
+  return { services: sandbox.window.services, spawns, store }
 }
 
 test('launchProject starts Windows Terminal with -d working directory and a direct PowerShell command', () => {
@@ -75,4 +75,103 @@ test('launchProject starts Windows Terminal with -d working directory and a dire
     '-Command',
     'claude'
   ])
+})
+
+test('getLauncherSettings returns builtin presets with defaults', () => {
+  const { services } = loadServices()
+  const s = services.getLauncherSettings()
+  assert.equal(s.launchCommands.length, 4)
+  assert.equal(s.terminals.length, 4)
+  assert.equal(s.launchCommand, 'claude')
+  assert.equal(s.selectedLaunchId, 'lc-claude')
+  assert.equal(s.terminalType, 'powershell')
+})
+
+test('migrates legacy settings into v2 list model', () => {
+  const store = {
+    'ccstart.settings': { launchCommand: 'claude --resume', powershellPath: 'C:\\my\\wt.exe' }
+  }
+  const { services } = loadServices({ store })
+  const s = services.getLauncherSettings()
+  assert.equal(s.launchCommand, 'claude --resume')
+  assert.equal(s.selectedLaunchId, 'lc-resume')
+  assert.equal(s.terminalType, 'wt')
+})
+
+test('custom launch commands can be added, selected, and deleted', () => {
+  const { services } = loadServices()
+  const created = services.addLaunchCommand({ label: 'Foo', command: 'claude --foo' })
+  services.setSelectedLaunchId(created.id)
+  let s = services.getLauncherSettings()
+  assert.equal(s.launchCommand, 'claude --foo')
+  assert.equal(s.launchCommands.length, 5)
+  // builtin cannot be deleted
+  assert.equal(services.deleteLaunchCommand('lc-claude'), false)
+  // custom can be deleted, selection falls back
+  assert.equal(services.deleteLaunchCommand(created.id), true)
+  s = services.getLauncherSettings()
+  assert.equal(s.launchCommands.length, 4)
+  assert.equal(s.selectedLaunchId, 'lc-claude')
+})
+
+test('builtin command overrides: edit, delete, reset', () => {
+  const { services } = loadServices()
+  const base = services.getAllCommands().length
+  services.updateBuiltinCommand('git-status', { name: '改名' })
+  let all = services.getAllCommands()
+  const gs = all.find((c) => c.id === 'git-status')
+  assert.equal(gs.name, '改名')
+  assert.equal(gs.modified, true)
+  services.deleteBuiltinCommand('git-pull')
+  assert.equal(services.getAllCommands().length, base - 1)
+  services.resetBuiltinCommand('git-pull')
+  services.resetBuiltinCommand('git-status')
+  all = services.getAllCommands()
+  assert.equal(all.length, base)
+  assert.equal(all.find((c) => c.id === 'git-status').name, 'Git 状态')
+})
+
+test('CMD terminal type launches a new cmd window', () => {
+  const cwd = 'D:\\proj'
+  const { services, spawns } = loadServices({ exists: (p) => p === cwd })
+  const result = services.launchProject(cwd, 'claude', { terminalType: 'cmd', powershellPath: '' })
+  assert.equal(result.success, true)
+  assert.equal(spawns[0].command, 'cmd.exe')
+  assert.equal(spawns[0].args[0], '/c')
+  assert.equal(spawns[0].args[1], 'start')
+  assert.ok(spawns[0].args.includes('/k'))
+})
+
+test('builtin terminal path can be overridden and reset', () => {
+  const { services } = loadServices()
+  const before = services.getLauncherSettings().terminals.find((t) => t.id === 'bt-powershell')
+  assert.ok(before.resolvedPath.toLowerCase().includes('powershell.exe'))
+
+  // 覆盖路径
+  assert.equal(services.setTerminalPathOverride('bt-powershell', 'C:\\custom\\ps.exe'), true)
+  const after = services.getLauncherSettings().terminals.find((t) => t.id === 'bt-powershell')
+  assert.equal(after.resolvedPath, 'C:\\custom\\ps.exe')
+
+  // 自定义 id 不可覆盖（仅预设）
+  assert.equal(services.setTerminalPathOverride('bt-custom-x', 'C:\\x.exe'), false)
+
+  // 恢复默认
+  services.clearTerminalPathOverride('bt-powershell')
+  const reset = services.getLauncherSettings().terminals.find((t) => t.id === 'bt-powershell')
+  assert.ok(reset.resolvedPath.toLowerCase().includes('powershell.exe'))
+})
+
+test('overridden terminal path is used at launch time', () => {
+  const cwd = 'D:\\proj'
+  const { services, spawns } = loadServices({ exists: (p) => p === cwd })
+  services.setTerminalPathOverride('bt-powershell', 'C:\\custom\\ps.exe')
+  services.setSelectedTerminalId('bt-powershell')
+  const s = services.getLauncherSettings()
+  const result = services.launchProject(cwd, s.launchCommand, {
+    powershellPath: s.powershellPath,
+    terminalType: s.terminalType
+  })
+  assert.equal(result.success, true)
+  // powershell 分支：cmd.exe /c start "" <psPath> ...
+  assert.ok(spawns[0].args.includes('C:\\custom\\ps.exe'))
 })

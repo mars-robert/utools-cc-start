@@ -7,20 +7,32 @@
 - ✅ 快速列出所有 Claude Code 项目
 - ✅ 智能搜索和过滤项目
 - ✅ 支持键盘快捷键（方向键、Alt+数字）
-- ✅ 支持 PowerShell 和 Windows Terminal
-- ✅ 自定义启动命令
+- ✅ 统一配置中心：启动配置与快捷命令集中管理
+- ✅ 启动命令下拉选择（claude 及其变体），支持自定义增删改
+- ✅ 终端下拉选择（Windows PowerShell / pwsh / Windows Terminal / CMD），支持自定义终端路径
+- ✅ 快捷命令（ccrun）全部可增删改，含内置命令的修改/删除与恢复默认
 - ✅ 自动检测项目可用性
 
-## Windows Terminal 支持
+## 统一配置中心
 
-插件现已支持使用 Windows Terminal 作为终端启动选项！
+启动配置与命令管理已合并为单一入口的「统一配置中心」，采用左右分栏的现代化卡片式界面。
 
-### 配置方法
-1. 在 uTools 中输入 `ccstartconf` 或 `配置`
-2. 在"终端路径"中输入 Windows Terminal 路径：
-   - `C:\terminal-1.24.10921.0\WindowsTerminal.exe`
-   - 或 `wt.exe`（如果已添加到 PATH）
-3. 点击保存
+### 进入方式
+1. 在 uTools 中输入 `cconf` / `ccstartconf` / `配置`
+2. 左侧导航切换分区：
+   - **📦 启动配置**：以单选列表选择启动命令与终端；点击「+ 新增」管理自定义项（内置预设不可删除）
+   - **⚡ 快捷命令**：增删改全部命令，内置命令可编辑/删除并「恢复默认」
+
+### UI 特性
+- 左侧固定导航 + 右侧可滚动内容区
+- 启动命令、终端均为单选列表（radio），所有选项一目了然，无需展开下拉
+- 预设终端路径可见可编辑：系统探测到的路径默认填入输入框，可修改后点「保存路径」覆盖，或「恢复默认」还原
+- 卡片式视觉风格，自动适配暗色主题
+
+> 迁移提示：旧的 `管理命令`（`ccrun-manage`）独立入口已移除，其功能并入「快捷命令」分区。旧的启动器设置会在首次进入时自动迁移到新的列表模型。
+
+### Windows Terminal / 自定义终端
+在「启动配置」标签页的终端下拉中选择 **Windows Terminal**，或点击「+ 新增」添加自定义终端可执行文件路径（如 `wt.exe` 或 `C:\path\to\WindowsTerminal.exe`）。
 
 详见：[Windows Terminal 支持说明](./WINDOWS-TERMINAL-SUPPORT.md)
 

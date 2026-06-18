@@ -16,6 +16,7 @@ dist-ssr
 # Local agent/session state
 .claude
 .omc
+.playwright-mcp/
 
 # Editor directories and files
 .vscode/*

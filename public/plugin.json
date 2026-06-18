@@ -16,10 +16,11 @@
     },
     {
       "code": "ccstartconf",
-      "explain": "配置 Claude Code 启动器",
+      "explain": "Claude Code 统一配置中心",
       "cmds": [
         "cconf",
-        "ccstartconf"
+        "ccstartconf",
+        "配置"
       ]
     },
     {
@@ -27,13 +28,6 @@
       "explain": "执行常用开发命令",
       "cmds": [
         "ccrun"
-      ]
-    },
-    {
-      "code": "ccrun-manage",
-      "explain": "管理自定义命令",
-      "cmds": [
-        "管理命令"
       ]
     }
   ]
