@@ -132,6 +132,46 @@ function decodeDirName (dirName) {
   return decoded
 }
 
+// 基于文件系统的辅助反编码：
+// Claude Code 编码时 `\`（路径分隔符）与 `_`（名字内的下划线）都会被写成 `-`，单凭 dirName 无法区分。
+// 这里在每一级子目录上，用文件系统验证「相邻若干段以 `_` 或 `-` 连接」是否构成真实存在的目录名，命中即下钻。
+// 找到一条完整存在的路径则返回，否则返回 null，由调用方继续回退。
+function walkFsForPath (current, segments, idx) {
+  if (idx === segments.length) return current
+  for (let k = 1; idx + k <= segments.length; k++) {
+    // 尝试用 _ 和 - 两种连接符（目录名中可能含有真实的连字符）
+    for (const sep of ['_', '-']) {
+      const subName = segments.slice(idx, idx + k).join(sep)
+      if (!subName) continue
+      const sub = path.join(current, subName)
+      try {
+        if (fs.existsSync(sub)) {
+          const r = walkFsForPath(sub, segments, idx + k)
+          if (r) return r
+        }
+      } catch (_) { /* 忽略，继续下一个候选 */ }
+    }
+  }
+  return null
+}
+
+function tryFsDecodeDirName (dirName) {
+  let basePath
+  let segments
+  if (process.platform === 'win32') {
+    const m = dirName.match(/^([A-Za-z])--(.*)$/)
+    if (!m) return null
+    basePath = m[1] + ':\\'
+    segments = m[2].split('-')
+  } else {
+    basePath = '/'
+    segments = dirName.replace(/^-+/, '').split('-')
+  }
+  if (segments.length === 0 || segments.every((s) => s === '')) return null
+  try { if (!fs.existsSync(basePath)) return null } catch (_) { return null }
+  return walkFsForPath(basePath, segments, 0)
+}
+
 // 计算最近使用时间：会话文件 mtimeMs 最大值，无会话文件时回退到目录自身 mtimeMs
 function computeRecency (projectDir, sessionFiles, dirStat) {
   let recency = 0
@@ -183,15 +223,21 @@ function listClaudeProjects () {
       })
       .sort((a, b) => b.mtimeMs - a.mtimeMs)
 
-    // 解析 cwd
+    // 解析 cwd：1) 会话 jsonl 中的 cwd（最准）；2) 文件系统辅助反编码；3) 字符级还原（有损）
     let cwd = ''
     let decoded = false
     const fromSession = readCwdFromSessions(projectDir, sortedForCwd)
     if (fromSession) {
       cwd = fromSession.cwd
     } else {
-      cwd = decodeDirName(dirName)
-      decoded = true
+      const fromFs = tryFsDecodeDirName(dirName)
+      if (fromFs) {
+        cwd = fromFs
+        decoded = true
+      } else {
+        cwd = decodeDirName(dirName)
+        decoded = true
+      }
     }
 
     let available = false
