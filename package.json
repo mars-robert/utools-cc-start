@@ -3,7 +3,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node test/services-launch.test.cjs"
+    "test": "node --test \"test/**/*.test.cjs\""
   },
   "dependencies": {
     "vue": "^3.5.13"

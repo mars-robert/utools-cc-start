@@ -1,0 +1,170 @@
+{
+  "installMethod": "global",
+  "showSpinnerTree": true,
+  "penguinModeOrgEnabled": false,
+  "numStartups": 42,
+  "lastShownEmergencyTip": "2026-06-01T00:00:00.000Z",
+  "machineID": "masked-machine-id",
+  "tipsHistory": {
+    "plan-mode-for-complex-tasks": {
+      "shownAt": "2026-06-01T00:00:00.000Z"
+    }
+  },
+  "toolUsage": {
+    "Read": 10,
+    "Task": 4
+  },
+  "skillUsage": {
+    "brainstorming": 2,
+    "superpowers:writing-plans": 1
+  },
+  "cachedGrowthBookFeatures": {
+    "tengu_example_feature": {
+      "value": true
+    }
+  },
+  "pluginUsage": {
+    "superpowers@claude-plugins-official": 3
+  },
+  "groveConfigCache": {
+    "36d456dd-068a-4225-a7b4-26f50c4d3490": {
+      "enabled": true
+    }
+  },
+  "overageCreditGrantCache": {
+    "54677f1e-48d2-410a-9f92-e57a6735361f": {
+      "granted": false
+    }
+  },
+  "oauthAccount": {
+    "accountUuid": "masked-account-uuid",
+    "emailAddress": "masked@example.com",
+    "organizationUuid": "masked-organization-uuid",
+    "displayName": "Masked User",
+    "organizationName": "Masked Org"
+  },
+  "mcpServers": {
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp"
+      ],
+      "env": {
+        "PLAYWRIGHT_BROWSERS_PATH": "0",
+        "PLAYWRIGHT_TOKEN": "masked"
+      }
+    },
+    "pencil": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "pencil"
+      ],
+      "env": {
+        "PENCIL_TOKEN": "masked"
+      }
+    }
+  },
+  "projects": {
+    "D:/code/example-project": {
+      "allowedTools": [
+        "Read"
+      ],
+      "lastTotalInputTokens": 1,
+      "projectOnboardingSeenCount": 1,
+      "mcpServers": {
+        "project-mcp": {
+          "type": "stdio",
+          "command": "npx",
+          "args": [
+            "-y",
+            "project-mcp"
+          ],
+          "env": {
+            "API_KEY": "masked",
+            "NODE_ENV": "production"
+          }
+        }
+      }
+    }
+  },
+  "additionalModelCostsCache": {
+    "claude-sonnet-4": {
+      "cost": 0
+    }
+  },
+  "additionalModelOptionsCache": {
+    "claude-sonnet-4": {
+      "contextWindow": 200000
+    }
+  },
+  "agentLastUsed": "masked",
+  "anonymousId": "masked",
+  "autoPermissionsNotificationCount": 5,
+  "btwUseCount": 0,
+  "cachedChromeExtensionInstalled": true,
+  "cachedExperimentFeatures": {
+    "example-experiment": true
+  },
+  "cachedExtraUsageDisabledReason": "masked",
+  "cachedGrowthBookFeaturesAt": "2026-06-01T00:00:00.000Z",
+  "changelogLastFetched": "2026-06-01T00:00:00.000Z",
+  "claudeCodeFirstTokenDate": "2026-06-01T00:00:00.000Z",
+  "clientDataCache": {
+    "masked": true
+  },
+  "closedIssuesLastChecked": "2026-06-01T00:00:00.000Z",
+  "companion": {
+    "enabled": true
+  },
+  "effortCalloutDismissed": true,
+  "effortCalloutV2Dismissed": false,
+  "feedbackSurveyState": {
+    "completed": false
+  },
+  "firstStartTime": "2026-06-01T00:00:00.000Z",
+  "githubRepoPaths": [
+    "D:/code/example-project"
+  ],
+  "hasCompletedOnboarding": true,
+  "hasResetAutoModeOptInForDefaultOffer": false,
+  "hasSeenTasksHint": true,
+  "hasShownOpus46Notice": false,
+  "hasUsedBackgroundTask": true,
+  "hasUsedBackslashReturn": false,
+  "hasVisitedExtraUsage": false,
+  "hasVisitedPasses": true,
+  "ideHintShownCount": 3,
+  "lastPlanModeUse": "2026-06-01T00:00:00.000Z",
+  "lastReleaseNotesSeen": "2026-06-01T00:00:00.000Z",
+  "officialMarketplaceAutoInstallAttempted": false,
+  "officialMarketplaceAutoInstalled": true,
+  "opusProMigrationComplete": true,
+  "passesEligibilityCache": {
+    "eligible": true
+  },
+  "passesLastSeenRemaining": 0,
+  "passesUpsellSeenCount": 2,
+  "penguinModeOrgEnabled": false,
+  "promptQueueUseCount": 4,
+  "remoteControlUpsellSeenCount": 1,
+  "routineFiredWatermark": "masked",
+  "seenNotifications": [
+    "example"
+  ],
+  "showSpinnerTree": true,
+  "sonnet1m45MigrationComplete": false,
+  "tipLifetimeShownCounts": {
+    "claude-code-tip": 1
+  },
+  "transcriptShareDismissed": false,
+  "unpinOpus47LaunchEffort": false,
+  "unpinOpus48LaunchEffort": false,
+  "userID": "masked",
+  "voiceFooterHintSeenCount": 2,
+  "voiceLangHintLastLanguage": "en",
+  "voiceLangHintShownCount": 1
+}
