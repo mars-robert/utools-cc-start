@@ -21,10 +21,31 @@ const containerRef = ref<HTMLElement | null>(null)
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase()
   if (!q) return projects.value
-  return projects.value.filter((p) =>
+
+  const matched = projects.value.filter((p) =>
     (p.displayName && p.displayName.toLowerCase().includes(q)) ||
     (p.cwd && p.cwd.toLowerCase().includes(q))
   )
+
+  // 如果没有匹配项且输入内容是有效路径，添加临时项目选项
+  if (matched.length === 0 && query.value.trim()) {
+    const inputPath = query.value.trim()
+    if (window.services.pathExists(inputPath)) {
+      const pathName = inputPath.split(/[/\\]/).pop() || inputPath
+      return [{
+        id: '__temp__',
+        dirName: '__temp__',
+        cwd: inputPath,
+        displayName: pathName,
+        decoded: false,
+        recency: Date.now(),
+        available: true,
+        isTemp: true
+      }]
+    }
+  }
+
+  return matched
 })
 
 // 让当前高亮项滚动到可见区域：用原生 scrollIntoView 以尊重 CSS scroll-padding（底部留白）
@@ -125,7 +146,7 @@ onMounted(() => {
   if (window.utools && typeof window.utools.setSubInput === 'function') {
     window.utools.setSubInput(({ text }: { text: string }) => {
       onQueryInput(text)
-    }, '搜索项目名称或路径…')
+    }, '搜索项目名称或路径直接启动…')
   }
   // 让容器获得焦点以接收键盘事件
   nextTick(() => {
@@ -169,7 +190,8 @@ onUnmounted(() => {
           <div class="launcher-item-main">
             <div class="launcher-item-name">
               {{ p.displayName }}
-              <span v-if="!p.available" class="launcher-badge">不可用</span>
+              <span v-if="p.isTemp" class="launcher-badge launcher-badge-temp">直接启动 Claude Code</span>
+              <span v-else-if="!p.available" class="launcher-badge">不可用</span>
             </div>
             <div class="launcher-item-path">{{ p.cwd || p.dirName }}</div>
           </div>
@@ -275,6 +297,11 @@ onUnmounted(() => {
   border-radius: 4px;
   background-color: #e0e0e0;
   color: #666;
+}
+
+.launcher-badge-temp {
+  background-color: #4f8cff;
+  color: #fff;
 }
 
 @media (prefers-color-scheme: dark) {
