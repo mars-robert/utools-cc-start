@@ -144,7 +144,7 @@ onMounted(loadCommands)
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 4px;
-  background: #e8f0ff;
+  background: color-mix(in srgb, var(--primary-color) 14%, transparent);
   color: var(--primary-color);
   margin-left: 6px;
   font-weight: 400;

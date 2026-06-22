@@ -795,6 +795,64 @@ function clearTerminalPathOverride (id) {
   return true
 }
 
+// ===== 主题配置：主色持久化与派生 =====
+
+const THEME_KEY = 'cctheme.settings'
+
+// 内置默认主色（与 variables.css 的 --primary-color 一致）
+const DEFAULT_PRIMARY = '#4f8cff'
+
+// 预设主色：10 个不同色相的常用主题色
+const PRESET_PRIMARIES = [
+  '#4f8cff', // 蓝（默认）
+  '#45aaf2', // 天蓝
+  '#0fb9b1', // 青
+  '#20bf6b', // 绿
+  '#f7b731', // 琥珀
+  '#fa8231', // 橙
+  '#eb3b5a', // 红
+  '#e84393', // 粉
+  '#a55eea', // 紫
+  '#6c5ce7' // 靛
+]
+
+// 校验 #RRGGBB 格式
+function isValidHex (hex) {
+  return typeof hex === 'string' && /^#[0-9a-fA-F]{6}$/.test(hex)
+}
+
+// 派生悬停色：与黑色混合约 12%（各通道 ×0.88），保持色相、压暗
+function deriveHover (hex) {
+  if (!isValidHex(hex)) return DEFAULT_PRIMARY
+  const r = Math.round(parseInt(hex.slice(1, 3), 16) * 0.88)
+  const g = Math.round(parseInt(hex.slice(3, 5), 16) * 0.88)
+  const b = Math.round(parseInt(hex.slice(5, 7), 16) * 0.88)
+  const to2 = (n) => n.toString(16).padStart(2, '0')
+  return '#' + to2(r) + to2(g) + to2(b)
+}
+
+// 读取主题设置；缺省返回 { primaryColor: null }
+function getThemeSettings () {
+  let raw = null
+  try { raw = window.utools.dbStorage.getItem(THEME_KEY) } catch (_) { raw = null }
+  if (!raw || typeof raw !== 'object') return { primaryColor: null }
+  const color = isValidHex(raw.primaryColor) ? raw.primaryColor : null
+  return { primaryColor: color }
+}
+
+// 设置主色（校验合法才写入），返回是否成功
+function setThemeColor (hex) {
+  if (!isValidHex(hex)) return false
+  window.utools.dbStorage.setItem(THEME_KEY, { primaryColor: hex })
+  return true
+}
+
+// 恢复默认：清除自定义主色（写回 null）
+function resetTheme () {
+  window.utools.dbStorage.setItem(THEME_KEY, { primaryColor: null })
+  return true
+}
+
 // 通过 window 对象向渲染进程注入 nodejs 能力
 window.services = {
   // ===== Claude Code 项目启动器 =====
@@ -870,5 +928,18 @@ window.services = {
   getLastUsedProjectDir,
 
   // 执行 ccrun 命令（在预加载层解析工作目录）
-  runCommand
+  runCommand,
+
+  // ===== 主题配置 =====
+
+  // 默认主色与预设色（供配置界面与测试使用）
+  DEFAULT_PRIMARY,
+  PRESET_PRIMARIES,
+
+  // 主题读写与派生
+  getThemeSettings,
+  setThemeColor,
+  resetTheme,
+  deriveHover,
+  isValidHex
 }

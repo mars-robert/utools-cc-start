@@ -247,7 +247,7 @@ onUnmounted(() => {
 }
 
 .launcher-item.active {
-  background-color: #4f8cff;
+  background-color: var(--primary-color);
   color: #fff;
 }
 
@@ -300,7 +300,7 @@ onUnmounted(() => {
 }
 
 .launcher-badge-temp {
-  background-color: #4f8cff;
+  background-color: var(--primary-color);
   color: #fff;
 }
 

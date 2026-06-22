@@ -3,9 +3,13 @@ import { onMounted, ref } from 'vue';
 import ProjectLauncher from './ProjectLauncher/index.vue'
 import UnifiedConfig from './UnifiedConfig/index.vue'
 import CommandList from './CommandList/index.vue'
+import { initTheme } from './theme'
 
 const route = ref('')
 const enterAction = ref({})
+
+// 渲染任何页面前应用持久化主色，避免默认色闪烁
+initTheme()
 
 onMounted(() => {
   window.utools.onPluginEnter((action) => {

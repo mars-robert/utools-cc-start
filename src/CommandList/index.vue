@@ -194,7 +194,7 @@ onUnmounted(() => {
 }
 
 .command-item.active {
-  background-color: #4f8cff;
+  background-color: var(--primary-color);
   color: #fff;
 }
 

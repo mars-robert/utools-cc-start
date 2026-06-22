@@ -286,7 +286,7 @@ onMounted(load)
 }
 .radio-item:hover { background: var(--bg-hover); }
 .radio-item.selected {
-  background: rgba(79, 140, 255, 0.08);
+  background: color-mix(in srgb, var(--primary-color) 8%, transparent);
   border-color: var(--primary-color);
 }
 
@@ -344,7 +344,7 @@ onMounted(load)
 
 .badge {
   font-size: 11px; padding: 1px 6px; border-radius: 4px;
-  background: #e8f0ff; color: var(--primary-color); font-weight: 400;
+  background: color-mix(in srgb, var(--primary-color) 14%, transparent); color: var(--primary-color); font-weight: 400;
 }
 .badge-preset {
   font-size: 11px; padding: 1px 6px; border-radius: 4px;
