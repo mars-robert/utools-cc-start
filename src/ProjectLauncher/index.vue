@@ -17,6 +17,10 @@ const loading = ref(true)
 const itemRefs = ref<HTMLElement[]>([])
 const listRef = ref<HTMLElement | null>(null)
 const containerRef = ref<HTMLElement | null>(null)
+// 待删除确认的失效项目（为 null 时不显示确认弹窗）
+const confirmTarget = ref<any>(null)
+// 确认弹窗当前聚焦的按钮：'confirm'（默认）| 'cancel'
+const confirmFocus = ref<'confirm' | 'cancel'>('confirm')
 
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase()
@@ -86,7 +90,9 @@ const loadProjects = () => {
 const launch = (project: any) => {
   if (!project) return
   if (!project.available) {
-    error.value = `项目工作目录不存在，无法启动：${project.cwd || project.dirName}`
+    // 失效项目（工作目录不存在）：弹窗询问是否删除该项目记录
+    confirmTarget.value = project
+    confirmFocus.value = 'confirm'
     return
   }
   error.value = ''
@@ -103,6 +109,25 @@ const launch = (project: any) => {
   }
 }
 
+// 确认删除失效项目记录
+const confirmDelete = () => {
+  const target = confirmTarget.value
+  if (!target) return
+  const result = window.services.deleteClaudeProject(target.dirName)
+  confirmTarget.value = null
+  if (result && result.success) {
+    error.value = ''
+    loadProjects()
+  } else {
+    error.value = (result && result.error) || '删除失败'
+  }
+}
+
+// 取消删除
+const cancelDelete = () => {
+  confirmTarget.value = null
+}
+
 const clampActive = () => {
   const max = filtered.value.length - 1
   if (activeIndex.value > max) activeIndex.value = Math.max(0, max)
@@ -110,6 +135,21 @@ const clampActive = () => {
 }
 
 const onKeydown = (e: KeyboardEvent) => {
+  // 确认弹窗打开时：拦截键盘，左右键切换按钮，Enter 执行当前聚焦项（默认确认删除），Esc 取消
+  if (confirmTarget.value) {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault()
+      confirmFocus.value = confirmFocus.value === 'confirm' ? 'cancel' : 'confirm'
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      if (confirmFocus.value === 'confirm') confirmDelete()
+      else cancelDelete()
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      cancelDelete()
+    }
+    return
+  }
   if (e.key === 'ArrowDown') {
     e.preventDefault()
     if (activeIndex.value < filtered.value.length - 1) setActive(activeIndex.value + 1)
@@ -199,6 +239,31 @@ onUnmounted(() => {
         </li>
       </ul>
     </template>
+
+    <!-- 失效项目删除确认弹窗 -->
+    <div v-if="confirmTarget" class="launcher-dialog-overlay" @click="cancelDelete">
+      <div class="launcher-dialog" @click.stop>
+        <div class="launcher-dialog-text">
+          项目工作目录
+          <div class="launcher-dialog-path">{{ confirmTarget.cwd || confirmTarget.dirName }}</div>
+          不存在，无法启动。是否删除当前项目 claude 缓存？
+        </div>
+        <div class="launcher-dialog-actions">
+          <button
+            class="launcher-dialog-btn"
+            :class="{ focused: confirmFocus === 'cancel' }"
+            @click="cancelDelete"
+            @mouseenter="confirmFocus = 'cancel'"
+          >取消</button>
+          <button
+            class="launcher-dialog-btn primary"
+            :class="{ focused: confirmFocus === 'confirm' }"
+            @click="confirmDelete"
+            @mouseenter="confirmFocus = 'confirm'"
+          >确认删除</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -304,6 +369,83 @@ onUnmounted(() => {
   color: #fff;
 }
 
+/* 失效项目删除确认弹窗 */
+.launcher-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.launcher-dialog {
+  background: var(--card-bg);
+  border: 1px solid #f0b4b4;
+  border-top: 3px solid #e53935;
+  border-radius: var(--card-radius);
+  padding: var(--spacing-xl);
+  width: 90%;
+  max-width: 420px;
+  box-shadow: 0 4px 16px rgba(229, 57, 53, 0.25);
+  color: var(--text-primary);
+}
+
+.launcher-dialog-text {
+  font-size: var(--font-size-base);
+  line-height: 1.6;
+}
+
+.launcher-dialog-path {
+  margin: var(--spacing-sm) 0;
+  padding: var(--spacing-sm);
+  background: #fdecea;
+  border: 1px solid #f5c6c2;
+  border-radius: 6px;
+  font-size: var(--font-size-sm);
+  word-break: break-all;
+  color: #c0392b;
+}
+
+.launcher-dialog-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  justify-content: flex-end;
+  margin-top: var(--spacing-xl);
+}
+
+.launcher-dialog-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: var(--font-size-base);
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  color: var(--text-primary);
+  transition: all 0.2s ease;
+}
+
+.launcher-dialog-btn:hover {
+  background: var(--bg-hover);
+}
+
+.launcher-dialog-btn.primary {
+  background: #e53935;
+  border-color: #e53935;
+  color: #fff;
+}
+
+.launcher-dialog-btn.primary:hover {
+  background: #c62828;
+  border-color: #c62828;
+}
+
+/* 键盘聚焦态：左右键切换时高亮当前按钮 */
+.launcher-dialog-btn.focused {
+  box-shadow: 0 0 0 2px var(--card-bg), 0 0 0 4px #e53935;
+}
+
 @media (prefers-color-scheme: dark) {
   .launcher-shortcut {
     background-color: rgba(255, 255, 255, 0.12);
@@ -313,6 +455,17 @@ onUnmounted(() => {
   .launcher-badge {
     background-color: #555;
     color: #ccc;
+  }
+
+  .launcher-dialog {
+    border-color: #5a2a2a;
+    border-top-color: #e53935;
+  }
+
+  .launcher-dialog-path {
+    background: #3a2020;
+    border-color: #5a2a2a;
+    color: #ef9a9a;
   }
 }
 </style>

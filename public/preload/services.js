@@ -262,6 +262,34 @@ function listClaudeProjects () {
   return result
 }
 
+// 删除 Claude Code 项目记录目录（~/.claude/projects/<dirName>）
+// 仅删除会话记录目录本身；其对应的真实工作目录已不存在，不会被触碰
+function deleteClaudeProject (dirName) {
+  try {
+    if (!dirName || typeof dirName !== 'string') {
+      return { success: false, error: '项目标识无效' }
+    }
+    // 防止路径穿越：dirName 必须是单层目录名
+    if (dirName.includes('/') || dirName.includes('\\') || dirName.includes('..')) {
+      return { success: false, error: '项目标识无效' }
+    }
+    const projectsDir = getProjectsDir()
+    const target = path.join(projectsDir, dirName)
+    // 再次确认目标确实位于 projectsDir 之内
+    const rel = path.relative(projectsDir, target)
+    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+      return { success: false, error: '项目标识无效' }
+    }
+    if (!fs.existsSync(target)) {
+      return { success: false, error: '项目记录不存在' }
+    }
+    fs.rmSync(target, { recursive: true, force: true })
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) }
+  }
+}
+
 // ===== 终端启动 =====
 
 // 检测是否为 Windows Terminal 路径
@@ -859,6 +887,9 @@ window.services = {
 
   // 列出 Claude Code 项目（已排序）
   listClaudeProjects,
+
+  // 删除 Claude Code 项目记录目录（用于清理工作目录已不存在的失效项目）
+  deleteClaudeProject,
 
   // 启动项目：在终端中以配置命令打开
   launchProject,
