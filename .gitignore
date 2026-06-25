@@ -17,6 +17,7 @@ dist-ssr
 .claude
 .omc
 .playwright-mcp/
+.codegraph/
 
 # Editor directories and files
 .vscode/*
