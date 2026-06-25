@@ -64,5 +64,4 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
-## 规范
-1. 所有页面的滚动条都要保持一致
+## 5. 每次检索必须使用codegraph进行
