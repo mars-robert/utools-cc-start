@@ -1,5 +1,6 @@
 <script lang="ts" setup>
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import ProjectHistory from '../ProjectHistory/index.vue'
 
 defineProps({
   enterAction: {
@@ -21,6 +22,13 @@ const containerRef = ref<HTMLElement | null>(null)
 const confirmTarget = ref<any>(null)
 // 确认弹窗当前聚焦的按钮：'confirm'（默认）| 'cancel'
 const confirmFocus = ref<'confirm' | 'cancel'>('confirm')
+
+// 视图：项目列表 / 历史页面
+const view = ref<'list' | 'history'>('list')
+const selectedProject = ref<any>(null)
+const historyQuery = ref('')
+// 当前高亮行内的焦点目标：'item'（启动）| 'history'（历史按钮）
+const rowFocus = ref<'item' | 'history'>('item')
 
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase()
@@ -69,6 +77,7 @@ const scrollActiveIntoView = () => {
 
 const setActive = (i: number) => {
   activeIndex.value = i
+  rowFocus.value = 'item'
   scrollActiveIntoView()
 }
 
@@ -128,6 +137,47 @@ const cancelDelete = () => {
   confirmTarget.value = null
 }
 
+// ===== 历史页面视图切换 =====
+
+// 列表视图：uTools 搜索框用于过滤项目
+const applyListSubInput = () => {
+  if (window.utools && typeof window.utools.setSubInput === 'function') {
+    window.utools.setSubInput(({ text }: { text: string }) => {
+      if (view.value === 'list') onQueryInput(text)
+    }, '搜索项目名称或路径直接启动…')
+  }
+}
+
+// 历史视图：uTools 搜索框用于过滤记忆与会话
+const applyHistorySubInput = () => {
+  if (window.utools && typeof window.utools.setSubInput === 'function') {
+    window.utools.setSubInput(({ text }: { text: string }) => {
+      historyQuery.value = text
+    }, '搜索记忆或会话…')
+  }
+}
+
+const clearSubInputValue = () => {
+  const u = window.utools as any
+  if (u && typeof u.setSubInputValue === 'function') u.setSubInputValue('')
+}
+
+const enterHistory = (project: any) => {
+  if (!project || project.isTemp) return
+  selectedProject.value = project
+  historyQuery.value = ''
+  view.value = 'history'
+  applyHistorySubInput()
+  clearSubInputValue()
+}
+
+const exitHistory = () => {
+  view.value = 'list'
+  selectedProject.value = null
+  applyListSubInput()
+  clearSubInputValue()
+}
+
 const clampActive = () => {
   const max = filtered.value.length - 1
   if (activeIndex.value > max) activeIndex.value = Math.max(0, max)
@@ -135,6 +185,8 @@ const clampActive = () => {
 }
 
 const onKeydown = (e: KeyboardEvent) => {
+  // 历史页面自行处理键盘事件（含 Esc 返回）
+  if (view.value === 'history') return
   // 确认弹窗打开时：拦截键盘，左右键切换按钮，Enter 执行当前聚焦项（默认确认删除），Esc 取消
   if (confirmTarget.value) {
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
@@ -156,9 +208,18 @@ const onKeydown = (e: KeyboardEvent) => {
   } else if (e.key === 'ArrowUp') {
     e.preventDefault()
     if (activeIndex.value > 0) setActive(activeIndex.value - 1)
+  } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+    // 左右键在「启动」与「历史按钮」之间切换当前行焦点（临时项无历史按钮）
+    const p = filtered.value[activeIndex.value]
+    if (p && !p.isTemp) {
+      e.preventDefault()
+      rowFocus.value = e.key === 'ArrowRight' ? 'history' : 'item'
+    }
   } else if (e.key === 'Enter') {
     e.preventDefault()
-    launch(filtered.value[activeIndex.value])
+    const p = filtered.value[activeIndex.value]
+    if (rowFocus.value === 'history' && p && !p.isTemp) enterHistory(p)
+    else launch(p)
   } else if (e.altKey && /^Digit[1-9]$/.test(e.code)) {
     // Alt+数字 快捷启动（用 e.code 判定物理按键）
     e.preventDefault()
@@ -182,12 +243,8 @@ const onQueryInput = (text: string) => {
 onMounted(() => {
   loadProjects()
   window.addEventListener('keydown', onKeydown)
-  // 复用 uTools 主搜索框作为搜索输入
-  if (window.utools && typeof window.utools.setSubInput === 'function') {
-    window.utools.setSubInput(({ text }: { text: string }) => {
-      onQueryInput(text)
-    }, '搜索项目名称或路径直接启动…')
-  }
+  // 复用 uTools 主搜索框作为搜索输入（列表视图过滤项目）
+  applyListSubInput()
   // 让容器获得焦点以接收键盘事件
   nextTick(() => {
     containerRef.value?.focus()
@@ -203,7 +260,13 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="containerRef" class="launcher" tabindex="0">
+  <ProjectHistory
+    v-if="view === 'history'"
+    :project="selectedProject"
+    :filter="historyQuery"
+    @back="exitHistory"
+  />
+  <div v-else ref="containerRef" class="launcher" tabindex="0">
     <div v-if="error" class="launcher-error">{{ error }}</div>
 
     <template v-if="!loading">
@@ -223,19 +286,42 @@ onUnmounted(() => {
           :key="p.id"
           :ref="(el) => { if (el) itemRefs[i] = el as HTMLElement }"
           class="launcher-item"
-          :class="{ active: i === activeIndex, unavailable: !p.available }"
-          @click="launch(p)"
           @mouseenter="activeIndex = i"
         >
-          <div class="launcher-item-main">
-            <div class="launcher-item-name">
-              {{ p.displayName }}
-              <span v-if="p.isTemp" class="launcher-badge launcher-badge-temp">直接启动 Claude Code</span>
-              <span v-else-if="!p.available" class="launcher-badge">不可用</span>
+          <div
+            class="launcher-item-body"
+            :class="{
+              active: i === activeIndex && rowFocus === 'item',
+              current: i === activeIndex,
+              unavailable: !p.available
+            }"
+            @click="launch(p)"
+            @mouseenter="rowFocus = 'item'"
+          >
+            <div class="launcher-item-main">
+              <div class="launcher-item-name">
+                {{ p.displayName }}
+                <span v-if="p.isTemp" class="launcher-badge launcher-badge-temp">直接启动 Claude Code</span>
+                <span v-else-if="!p.available" class="launcher-badge">不可用</span>
+              </div>
+              <div class="launcher-item-path">{{ p.cwd || p.dirName }}</div>
             </div>
-            <div class="launcher-item-path">{{ p.cwd || p.dirName }}</div>
+            <span v-if="i < 9" class="launcher-shortcut">Alt+{{ i + 1 }}</span>
           </div>
-          <span v-if="i < 9" class="launcher-shortcut">Alt+{{ i + 1 }}</span>
+          <button
+            v-if="!p.isTemp"
+            class="launcher-history-btn"
+            :class="{ focused: i === activeIndex && rowFocus === 'history' }"
+            title="查看历史会话与记忆"
+            @click.stop="enterHistory(p)"
+            @mouseenter="rowFocus = 'history'"
+          >
+            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
+              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 7.5V12l3 1.8" />
+            </svg>
+          </button>
         </li>
       </ul>
     </template>
@@ -297,28 +383,49 @@ onUnmounted(() => {
   flex: 1 1 auto;
   overflow-y: auto;
   position: relative;
+  /* 行之间留出间隙 */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   /* 滚动定位时上下各保留安全边距，使越界项不贴边、底部露出留白 */
   scroll-padding-top: 10px;
   scroll-padding-bottom: 10px;
 }
 
+/* 行容器：透明，固定高度，仅负责把「项目按钮」与「历史按钮」并排隔开 */
 .launcher-item {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  height: 52px;
+  flex: 0 0 auto;
+}
+
+/* 项目按钮（启动）：独立元素，自带高亮，不包含历史按钮 */
+.launcher-item-body {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 12px;
-  border-radius: 5px;
+  padding: 0 12px;
+  border-radius: 6px;
   cursor: pointer;
+  overflow: hidden;
 }
 
-.launcher-item.active {
+.launcher-item-body.current {
+  background-color: var(--bg-hover);
+}
+
+.launcher-item-body.active {
   background-color: var(--primary-color);
   color: #fff;
 }
 
-.launcher-item.unavailable {
-  cursor: not-allowed;
+.launcher-item-body.unavailable {
   opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .launcher-item-main {
@@ -335,7 +442,9 @@ onUnmounted(() => {
   font-size: 12px;
   opacity: 0.75;
   margin-top: 2px;
-  word-break: break-all;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .launcher-shortcut {
@@ -348,8 +457,31 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.launcher-item.active .launcher-shortcut {
+.launcher-item-body.active .launcher-shortcut {
   background-color: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+
+/* 历史按钮：与项目按钮等高的独立正方形（与行高一致，宽=高=52px） */
+.launcher-history-btn {
+  flex: 0 0 auto;
+  width: 52px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.launcher-history-btn:hover,
+.launcher-history-btn.focused {
+  background: var(--primary-color);
+  border-color: var(--primary-color);
   color: #fff;
 }
 

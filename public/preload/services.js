@@ -881,6 +881,465 @@ function resetTheme () {
   return true
 }
 
+// ===== 项目历史:会话与记忆只读接口 =====
+
+// 安全的单层名称校验:禁止路径分隔符与上跳
+function isSafeSegment (name) {
+  return typeof name === 'string' && name.length > 0 &&
+    !name.includes('/') && !name.includes('\\') && !name.includes('..')
+}
+
+// 校验 dirName 并返回其在 projects 目录下的安全绝对路径;非法返回 null
+function getProjectDirSafe (dirName) {
+  if (!isSafeSegment(dirName)) return null
+  const projectsDir = getProjectsDir()
+  const target = path.join(projectsDir, dirName)
+  const rel = path.relative(projectsDir, target)
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null
+  return target
+}
+
+// 读取文件末尾至多 maxBytes 字节(用于廉价提取会话标题);
+// 低层 fd API 不可用时(如测试沙箱)回退到整文件读取
+function readFileTail (filePath, maxBytes) {
+  if (typeof fs.openSync === 'function' && typeof fs.readSync === 'function' && typeof fs.fstatSync === 'function') {
+    let fd
+    try {
+      fd = fs.openSync(filePath, 'r')
+      const size = fs.fstatSync(fd).size
+      const start = Math.max(0, size - maxBytes)
+      const len = size - start
+      if (len <= 0) return ''
+      const buf = Buffer.alloc(len)
+      fs.readSync(fd, buf, 0, len, start)
+      return buf.toString('utf-8')
+    } catch (_) {
+      // 回退到整文件读取
+    } finally {
+      if (fd !== undefined) { try { fs.closeSync(fd) } catch (_) { /* 忽略 */ } }
+    }
+  }
+  try { return fs.readFileSync(filePath, 'utf-8') } catch (_) { return '' }
+}
+
+// 移除本地命令噪声包装(仅用于展示/标题预览)
+function stripCommandNoise (text) {
+  if (typeof text !== 'string') return ''
+  return text
+    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g, '')
+    .replace(/<command-message>[\s\S]*?<\/command-message>/g, '')
+    .replace(/<command-name>[\s\S]*?<\/command-name>/g, '')
+    .replace(/<command-args>[\s\S]*?<\/command-args>/g, '')
+    .trim()
+}
+
+// 从消息对象提取纯文本(content 可能为字符串或内容块数组)
+function messageText (message) {
+  if (!message) return ''
+  const c = message.content
+  if (typeof c === 'string') return c
+  if (Array.isArray(c)) {
+    return c.filter(b => b && b.type === 'text' && typeof b.text === 'string')
+      .map(b => b.text).join('\n')
+  }
+  return ''
+}
+
+// 从尾部文本提取标题:最后一条 ai-title 的 aiTitle
+function titleFromTail (tailText) {
+  const lines = tailText.split(/\r?\n/)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]
+    if (!line || line.indexOf('"ai-title"') === -1) continue
+    try {
+      const d = JSON.parse(line)
+      if (d && d.type === 'ai-title' && d.aiTitle) return d.aiTitle
+    } catch (_) { /* 跳过半行 */ }
+  }
+  return ''
+}
+
+// 从头部文本提取回退标题:首条真实用户消息
+function titleFromHead (headText) {
+  const lines = headText.split(/\r?\n/)
+  for (const line of lines) {
+    if (!line || line.indexOf('"user"') === -1) continue
+    try {
+      const d = JSON.parse(line)
+      if (!d || d.type !== 'user' || d.isMeta) continue
+      const cleaned = stripCommandNoise(messageText(d.message))
+      if (cleaned) return cleaned.replace(/\s+/g, ' ').slice(0, 80)
+    } catch (_) { /* 跳过 */ }
+  }
+  return ''
+}
+
+// 列出某项目的历史会话(摘要),按最近修改时间降序
+function listProjectSessions (dirName) {
+  const projectDir = getProjectDirSafe(dirName)
+  if (!projectDir) return []
+  let names = []
+  try {
+    names = fs.readdirSync(projectDir, { withFileTypes: true })
+      .filter(f => f.isFile() && f.name.endsWith('.jsonl'))
+      .map(f => f.name)
+  } catch (_) { return [] }
+
+  const sessions = []
+  for (const name of names) {
+    const filePath = path.join(projectDir, name)
+    let mtime = 0
+    let size = 0
+    try { const st = fs.statSync(filePath); mtime = st.mtimeMs; size = st.size || 0 } catch (_) { /* 忽略 */ }
+    const tail = readFileTail(filePath, 256 * 1024)
+    let title = titleFromTail(tail)
+    if (!title) {
+      // 尾部无 ai-title:读整文件找首条用户消息作为回退
+      let head = tail
+      try { head = fs.readFileSync(filePath, 'utf-8') } catch (_) { /* 用 tail */ }
+      title = titleFromHead(head)
+    }
+    sessions.push({ sessionId: name.replace(/\.jsonl$/, ''), title, mtime, size })
+  }
+  sessions.sort((a, b) => b.mtime - a.mtime)
+  return sessions
+}
+
+// 极简 frontmatter 解析:顶层 key: value + metadata 下一层缩进键
+function parseMemoryFrontmatter (fmText) {
+  const fm = { metadata: {} }
+  let inMeta = false
+  for (const raw of fmText.split(/\r?\n/)) {
+    if (!raw.trim()) continue
+    const indented = /^\s/.test(raw)
+    const line = raw.trim()
+    const idx = line.indexOf(':')
+    if (idx === -1) continue
+    const key = line.slice(0, idx).trim()
+    const val = line.slice(idx + 1).trim().replace(/^["']|["']$/g, '')
+    if (!indented && key === 'metadata') { inMeta = true; fm.metadata = {}; continue }
+    if (indented && inMeta) { fm.metadata[key] = val; continue }
+    inMeta = false
+    fm[key] = val
+  }
+  return fm
+}
+
+// 拆分记忆 markdown 的 frontmatter 与正文
+function splitFrontmatter (content) {
+  const text = typeof content === 'string' ? content.replace(/^﻿/, '') : ''
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
+  if (!m) return { frontmatter: { metadata: {} }, body: text }
+  return { frontmatter: parseMemoryFrontmatter(m[1]), body: m[2] }
+}
+
+// 列出某项目的记忆条目(排除索引 MEMORY.md)
+function listProjectMemories (dirName) {
+  const projectDir = getProjectDirSafe(dirName)
+  if (!projectDir) return []
+  const memDir = path.join(projectDir, 'memory')
+  let names = []
+  try {
+    if (!fs.existsSync(memDir)) return []
+    names = fs.readdirSync(memDir, { withFileTypes: true })
+      .filter(f => f.isFile() && f.name.endsWith('.md') && f.name !== 'MEMORY.md')
+      .map(f => f.name)
+  } catch (_) { return [] }
+
+  const memories = []
+  for (const fileName of names) {
+    try {
+      const content = fs.readFileSync(path.join(memDir, fileName), 'utf-8')
+      const { frontmatter } = splitFrontmatter(content)
+      const meta = frontmatter.metadata || {}
+      memories.push({
+        name: frontmatter.name || fileName.replace(/\.md$/, ''),
+        description: frontmatter.description || '',
+        type: meta.type || '',
+        originSessionId: meta.originSessionId || '',
+        fileName
+      })
+    } catch (_) { /* 跳过坏文件 */ }
+  }
+  return memories
+}
+
+// 读取单条记忆 { frontmatter, body }
+function readMemory (dirName, fileName) {
+  const projectDir = getProjectDirSafe(dirName)
+  if (!projectDir) return null
+  if (!isSafeSegment(fileName) || !fileName.endsWith('.md')) return null
+  try {
+    const content = fs.readFileSync(path.join(projectDir, 'memory', fileName), 'utf-8')
+    return splitFrontmatter(content)
+  } catch (_) { return null }
+}
+
+// 工具结果内容归一化为文本
+function normalizeToolResult (content) {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content.map(b => {
+      if (typeof b === 'string') return b
+      if (b && b.type === 'text') return b.text || ''
+      return ''
+    }).join('\n')
+  }
+  return ''
+}
+
+// 从 attachment 对象提取可读文本预览
+function attachmentText (a) {
+  if (!a || typeof a !== 'object') return ''
+  for (const key of ['content', 'text', 'stdout', 'message']) {
+    if (typeof a[key] === 'string' && a[key].trim()) return a[key]
+  }
+  const { type, ...rest } = a
+  try {
+    const s = JSON.stringify(rest)
+    return s && s !== '{}' ? s : ''
+  } catch (_) { return '' }
+}
+
+// 解析斜杠命令用户消息：<command-name> / <command-args> / <command-message>
+function parseCommand (text) {
+  if (typeof text !== 'string' || text.indexOf('<command-name>') === -1) return null
+  const pick = (tag) => {
+    const m = text.match(new RegExp('<' + tag + '>([\\s\\S]*?)</' + tag + '>'))
+    return m ? m[1].trim() : ''
+  }
+  const name = pick('command-name')
+  if (!name) return null
+  return { name, args: pick('command-args'), message: pick('command-message') }
+}
+
+// 解析会话 jsonl 文本为有序消息块 + 元信息
+function parseSession (content) {
+  const blocks = []
+  const toolUseById = {}
+  const meta = { gitBranch: '', version: '', firstTimestamp: '', lastTimestamp: '', count: 0 }
+  const lines = (typeof content === 'string' ? content : '').split(/\r?\n/)
+  for (const line of lines) {
+    if (!line) continue
+    let d
+    try { d = JSON.parse(line) } catch (_) { continue }
+    if (!d || typeof d !== 'object') continue
+    if (!meta.gitBranch && d.gitBranch) meta.gitBranch = d.gitBranch
+    if (!meta.version && d.version) meta.version = d.version
+    if (d.timestamp) {
+      if (!meta.firstTimestamp) meta.firstTimestamp = d.timestamp
+      meta.lastTimestamp = d.timestamp
+    }
+    const type = d.type
+    if (type === 'attachment') {
+      const a = d.attachment || {}
+      blocks.push({
+        kind: 'attachment',
+        subtype: (a && a.type) || 'attachment',
+        text: attachmentText(a),
+        sidechain: !!d.isSidechain
+      })
+      continue
+    }
+    if (type !== 'user' && type !== 'assistant' && type !== 'system') continue
+    if (d.isMeta) continue
+    const sidechain = !!d.isSidechain
+    const ts = d.timestamp || ''
+    if (type === 'system') {
+      const text = typeof d.content === 'string' ? d.content : messageText(d.message)
+      if (text) { blocks.push({ kind: 'system', text, sidechain, ts }); meta.count++ }
+      continue
+    }
+    const message = d.message
+    if (!message) continue
+    // 助手消息携带 token 用量与模型，用于对话框辅助信息
+    const usage = type === 'assistant' && message.usage ? message.usage : null
+    const model = type === 'assistant' ? (message.model || '') : ''
+    const c = message.content
+    // 用户消息：优先识别斜杠命令（含 command-name 标签）
+    if (type === 'user') {
+      const rawText = typeof c === 'string'
+        ? c
+        : (Array.isArray(c) ? c.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n') : '')
+      const cmd = parseCommand(rawText)
+      if (cmd) { blocks.push({ kind: 'user', command: cmd, text: cmd.args || '', sidechain, ts }); meta.count++; continue }
+    }
+    if (typeof c === 'string') {
+      if (type === 'user') {
+        const text = stripCommandNoise(c)
+        if (text) { blocks.push({ kind: 'user', text, sidechain, ts }); meta.count++ }
+      }
+      continue
+    }
+    if (!Array.isArray(c)) continue
+    for (const b of c) {
+      if (!b || typeof b !== 'object') continue
+      if (b.type === 'text' && b.text) {
+        const text = type === 'user' ? stripCommandNoise(b.text) : b.text
+        if (text) { blocks.push({ kind: type === 'user' ? 'user' : 'assistant', text, sidechain, ts, usage, model }); meta.count++ }
+      } else if (b.type === 'thinking' && (b.thinking || b.text)) {
+        blocks.push({ kind: 'thinking', text: b.thinking || b.text, sidechain, ts, usage, model }); meta.count++
+      } else if (b.type === 'tool_use') {
+        const blk = { kind: 'tool_use', id: b.id || '', name: b.name || '', input: b.input, result: null, sidechain, ts, usage, model }
+        if (b.id) toolUseById[b.id] = blk
+        blocks.push(blk); meta.count++
+      } else if (b.type === 'tool_result') {
+        const text = normalizeToolResult(b.content)
+        const target = b.tool_use_id ? toolUseById[b.tool_use_id] : null
+        if (target) {
+          target.result = { text, isError: !!b.is_error }
+        } else {
+          blocks.push({ kind: 'tool_result', text, isError: !!b.is_error, sidechain, ts }); meta.count++
+        }
+      }
+    }
+  }
+  return { blocks, meta }
+}
+
+// 读取并解析单个会话 { blocks, meta }
+function readSession (dirName, sessionId) {
+  const projectDir = getProjectDirSafe(dirName)
+  if (!projectDir) return null
+  if (!isSafeSegment(sessionId)) return null
+  try {
+    const content = fs.readFileSync(path.join(projectDir, sessionId + '.jsonl'), 'utf-8')
+    return parseSession(content)
+  } catch (_) { return null }
+}
+
+function safeStringify (v) {
+  if (typeof v === 'string') return v
+  try { return JSON.stringify(v, null, 2) } catch (_) { return String(v) }
+}
+
+// 整条仅为中断标记 → 取消通知
+function isInterruptOnly (text) {
+  return /^\s*\[Request interrupted by user[^\]]*\]\s*$/.test(text || '')
+}
+function stripInterrupt (text) {
+  return (text || '').replace(/\[Request interrupted by user[^\]]*\]/g, '').replace(/[ \t]{2,}/g, ' ').trim()
+}
+
+// 逐行 diff（带 +/-/空格 前缀，供 ```diff 代码块）
+function lineDiffText (oldStr, newStr) {
+  const a = (oldStr || '').split('\n'); const b = (newStr || '').split('\n')
+  const m = a.length; const n = b.length
+  if (m * n > 200000) return [...a.map((t) => '-' + t), ...b.map((t) => '+' + t)].join('\n')
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+  for (let i = m - 1; i >= 0; i--) for (let j = n - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+  const out = []; let i = 0; let j = 0
+  while (i < m && j < n) { if (a[i] === b[j]) { out.push(' ' + a[i]); i++; j++ } else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push('-' + a[i]); i++ } else { out.push('+' + b[j]); j++ } }
+  while (i < m) { out.push('-' + a[i]); i++ }
+  while (j < n) { out.push('+' + b[j]); j++ }
+  return out.join('\n')
+}
+
+// 输出一个 Claude 内容块到 markdown 行数组
+function mdClaudeBlock (out, c) {
+  if (c.kind === 'assistant') {
+    out.push(c.text, '')
+  } else if (c.kind === 'thinking') {
+    out.push('<details>', '<summary>💭 思考</summary>', '', '> ' + String(c.text).replace(/\n/g, '\n> '), '', '</details>', '')
+  } else if (c.kind === 'tool_use') {
+    const desc = c.input && c.input.description ? ' — ' + c.input.description : ''
+    out.push('**🔧 ' + (c.name || '工具') + '**' + desc, '')
+    if (c.name === 'Edit' && c.input && typeof c.input.old_string === 'string' && typeof c.input.new_string === 'string') {
+      out.push('```diff', lineDiffText(c.input.old_string, c.input.new_string), '```')
+    } else if (c.input && typeof c.input.command === 'string') {
+      out.push('```bash', c.input.command, '```')
+    } else if (c.input !== undefined) {
+      out.push('```json', safeStringify(c.input), '```')
+    }
+    if (c.result) {
+      out.push('', c.result.isError ? '_结果（错误）_' : '_结果_', '```', c.result.text, '```')
+    }
+    out.push('')
+  } else if (c.kind === 'tool_result') {
+    out.push('```', c.text, '```', '')
+  } else if (c.kind === 'system') {
+    out.push('> 系统：' + c.text, '')
+  } else if (c.kind === 'attachment') {
+    out.push('`附件 · ' + c.subtype + '`', '')
+  }
+}
+
+// 将解析后的会话格式化为 Markdown 对话稿（按用户 / Claude 回合分组）
+function sessionToMarkdown (parsed, sessionId) {
+  if (!parsed) return ''
+  const { blocks, meta } = parsed
+  const out = ['# 会话记录']
+  const metaBits = []
+  if (sessionId) metaBits.push('`' + sessionId + '`')
+  if (meta.gitBranch) metaBits.push('分支 ' + meta.gitBranch)
+  if (meta.version) metaBits.push('v' + meta.version)
+  if (meta.firstTimestamp) metaBits.push(meta.firstTimestamp)
+  if (metaBits.length) out.push('> ' + metaBits.join(' · '))
+  out.push('')
+
+  let i = 0
+  const n = blocks.length
+  while (i < n) {
+    const b = blocks[i]
+    if (b.kind === 'user') {
+      if (isInterruptOnly(b.text)) { out.push('> ⊘ 用户已取消', ''); i++; continue }
+      out.push('## 👤 用户', '')
+      if (b.command) {
+        out.push('```', b.command.name + (b.command.args ? ' ' + b.command.args : ''), '```', '')
+      } else {
+        out.push(stripInterrupt(b.text) || b.text, '')
+      }
+      i++
+    } else {
+      out.push('## 🤖 Claude', '')
+      while (i < n && blocks[i].kind !== 'user') { mdClaudeBlock(out, blocks[i]); i++ }
+    }
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n'
+}
+
+// 导出会话为 Markdown 字符串
+function exportSession (dirName, sessionId) {
+  const parsed = readSession(dirName, sessionId)
+  if (!parsed) return null
+  return sessionToMarkdown(parsed, sessionId)
+}
+
+// 写入任意文本到用户选择的文件（用于 HTML 导出）
+function writeTextFile (filePath, content) {
+  try {
+    if (!filePath || typeof filePath !== 'string') return { success: false, error: '保存路径无效' }
+    fs.writeFileSync(filePath, typeof content === 'string' ? content : String(content), { encoding: 'utf-8' })
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) }
+  }
+}
+
+// 导出会话 Markdown 并写入用户选择的文件(另存为)
+function exportSessionToFile (dirName, sessionId, filePath) {
+  try {
+    if (!filePath || typeof filePath !== 'string') return { success: false, error: '保存路径无效' }
+    const md = exportSession(dirName, sessionId)
+    if (md === null) return { success: false, error: '会话读取失败' }
+    fs.writeFileSync(filePath, md, { encoding: 'utf-8' })
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) }
+  }
+}
+
+// 在终端中恢复指定会话(claude --resume <id>),复用启动器终端配置
+function resumeSession (cwd, sessionId) {
+  if (!cwd) return { success: false, error: '项目工作目录为空' }
+  if (typeof sessionId !== 'string' || !sessionId) return { success: false, error: '会话标识无效' }
+  const settings = getLauncherSettings()
+  return launchProject(cwd, 'claude --resume ' + sessionId, {
+    powershellPath: settings.powershellPath,
+    terminalType: settings.terminalType
+  })
+}
+
 // 通过 window 对象向渲染进程注入 nodejs 能力
 window.services = {
   // ===== Claude Code 项目启动器 =====
@@ -898,6 +1357,36 @@ window.services = {
   pathExists (p) {
     try { return !!p && fs.existsSync(p) } catch (_) { return false }
   },
+
+  // ===== 项目历史：会话与记忆只读接口 =====
+
+  // 列出某项目的历史会话摘要（标题 + 时间）
+  listProjectSessions,
+
+  // 列出某项目的记忆条目
+  listProjectMemories,
+
+  // 读取单条记忆 { frontmatter, body }
+  readMemory,
+
+  // 读取并解析单个会话 { blocks, meta }
+  readSession,
+
+  // 解析会话文本 / 格式化为 Markdown（导出复用）
+  parseSession,
+  sessionToMarkdown,
+
+  // 导出会话为 Markdown 字符串
+  exportSession,
+
+  // 导出会话并另存为文件
+  exportSessionToFile,
+
+  // 写入任意文本文件（HTML 导出）
+  writeTextFile,
+
+  // 在终端中恢复指定会话（claude --resume <id>）
+  resumeSession,
 
   // ===== Claude config file I/O =====
 
