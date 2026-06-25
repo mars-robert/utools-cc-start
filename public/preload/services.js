@@ -185,6 +185,30 @@ function computeRecency (projectDir, sessionFiles, dirStat) {
   return recency
 }
 
+// 读取项目当前 git 分支：直接解析 .git/HEAD，零子进程开销
+// 返回分支名；detached HEAD 返回短 commit；非 git 仓库或出错返回 ''
+function readGitBranch (cwd) {
+  if (!cwd) return ''
+  try {
+    let gitDir = path.join(cwd, '.git')
+    const st = fs.statSync(gitDir)
+    if (st.isFile()) {
+      // .git 为文件（worktree/submodule）：内容形如 "gitdir: <路径>"
+      const m = fs.readFileSync(gitDir, 'utf-8').trim().match(/^gitdir:\s*(.+)$/)
+      if (!m) return ''
+      gitDir = path.resolve(cwd, m[1].trim())
+    }
+    const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf-8').trim()
+    const ref = head.match(/^ref:\s*refs\/heads\/(.+)$/)
+    if (ref) return ref[1]
+    // detached HEAD：HEAD 直接是 commit SHA
+    if (/^[0-9a-f]{7,40}$/i.test(head)) return head.slice(0, 7)
+    return ''
+  } catch (_) {
+    return ''
+  }
+}
+
 function listClaudeProjects () {
   const projectsDir = getProjectsDir()
   const result = { dirExists: false, projects: [] }
@@ -244,6 +268,8 @@ function listClaudeProjects () {
     try { available = !!cwd && fs.existsSync(cwd) } catch (_) { available = false }
 
     const displayName = cwd ? path.basename(cwd) || cwd : dirName
+    // 仅对工作目录存在的项目读取分支（避免对失效路径做无谓 IO）
+    const branch = available ? readGitBranch(cwd) : ''
 
     projects.push({
       id: dirName,
@@ -252,7 +278,8 @@ function listClaudeProjects () {
       displayName,
       decoded,
       recency: computeRecency(projectDir, sortedForCwd, dirStat),
-      available
+      available,
+      branch
     })
   }
 
@@ -1346,6 +1373,9 @@ window.services = {
 
   // 列出 Claude Code 项目（已排序）
   listClaudeProjects,
+
+  // 读取项目当前 git 分支（解析 .git/HEAD）
+  readGitBranch,
 
   // 删除 Claude Code 项目记录目录（用于清理工作目录已不存在的失效项目）
   deleteClaudeProject,

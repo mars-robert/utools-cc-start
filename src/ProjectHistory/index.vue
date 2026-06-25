@@ -505,7 +505,23 @@ watch(() => props.project, load)
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6" /></svg>
       </button>
       <div class="ph-proj">
-        <div class="ph-proj-name">{{ project && project.displayName }}</div>
+        <div class="ph-proj-name">
+          <span class="ph-proj-name-text">{{ project && project.displayName }}</span>
+          <span
+            v-if="project && project.branch"
+            class="launcher-badge launcher-badge-branch"
+            :title="'当前分支：' + project.branch"
+          >
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="6" cy="6" r="2.4" />
+              <circle cx="6" cy="18" r="2.4" />
+              <circle cx="18" cy="8" r="2.4" />
+              <path d="M6 8.4v7.2M18 10.4c0 4-3.5 4.6-6 5" />
+            </svg>
+            {{ project.branch }}
+          </span>
+        </div>
         <div class="ph-proj-path">{{ project && (project.cwd || project.dirName) }}</div>
       </div>
       <button class="ph-terminal" :disabled="project && !project.available"
@@ -865,7 +881,8 @@ watch(() => props.project, load)
 }
 .ph-back:hover { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
 .ph-proj { flex: 1 1 auto; min-width: 0; }
-.ph-proj-name { font-weight: 600; font-size: 14px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-proj-name { display: flex; align-items: center; min-width: 0; }
+.ph-proj-name-text { min-width: 0; font-weight: 600; font-size: 14px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ph-proj-path { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
 .ph-terminal {
   flex: 0 0 auto;

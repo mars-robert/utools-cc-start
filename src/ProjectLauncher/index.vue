@@ -303,6 +303,20 @@ onUnmounted(() => {
                 {{ p.displayName }}
                 <span v-if="p.isTemp" class="launcher-badge launcher-badge-temp">直接启动 Claude Code</span>
                 <span v-else-if="!p.available" class="launcher-badge">不可用</span>
+                <span
+                  v-else-if="p.branch"
+                  class="launcher-badge launcher-badge-branch"
+                  :title="'当前分支：' + p.branch"
+                >
+                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="6" cy="6" r="2.4" />
+                    <circle cx="6" cy="18" r="2.4" />
+                    <circle cx="18" cy="8" r="2.4" />
+                    <path d="M6 8.4v7.2M18 10.4c0 4-3.5 4.6-6 5" />
+                  </svg>
+                  {{ p.branch }}
+                </span>
               </div>
               <div class="launcher-item-path">{{ p.cwd || p.dirName }}</div>
             </div>
@@ -436,6 +450,8 @@ onUnmounted(() => {
 .launcher-item-name {
   font-weight: 600;
   font-size: 14px;
+  display: flex;
+  align-items: center;
 }
 
 .launcher-item-path {
@@ -499,6 +515,21 @@ onUnmounted(() => {
 .launcher-badge-temp {
   background-color: var(--primary-color);
   color: #fff;
+}
+
+/* 分支徽章：图标 + 完整分支名，与标题在同一行垂直居中对齐，不缩略 */
+.launcher-badge-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  background-color: rgba(0, 0, 0, 0.06);
+  color: #4b5563;
+}
+
+.launcher-badge-branch svg {
+  flex: 0 0 auto;
 }
 
 /* 失效项目删除确认弹窗 */
@@ -587,6 +618,11 @@ onUnmounted(() => {
   .launcher-badge {
     background-color: #555;
     color: #ccc;
+  }
+
+  .launcher-badge-branch {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: #cbd5e1;
   }
 
   .launcher-dialog {

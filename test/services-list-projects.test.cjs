@@ -52,6 +52,7 @@ const fnNames = [
   'walkFsForPath',
   'tryFsDecodeDirName',
   'computeRecency',
+  'readGitBranch',
   'listClaudeProjects'
 ]
 
