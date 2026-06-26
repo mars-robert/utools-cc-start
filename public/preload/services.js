@@ -1235,6 +1235,17 @@ function readSession (dirName, sessionId) {
   } catch (_) { return null }
 }
 
+// 读取会话文件的轻量状态(修改时间 + 大小),供实时刷新做变更检测,避免无变化时重复解析
+function statSession (dirName, sessionId) {
+  const projectDir = getProjectDirSafe(dirName)
+  if (!projectDir) return null
+  if (!isSafeSegment(sessionId)) return null
+  try {
+    const st = fs.statSync(path.join(projectDir, sessionId + '.jsonl'))
+    return { mtime: st.mtimeMs, size: st.size || 0 }
+  } catch (_) { return null }
+}
+
 function safeStringify (v) {
   if (typeof v === 'string') return v
   try { return JSON.stringify(v, null, 2) } catch (_) { return String(v) }
@@ -1401,6 +1412,9 @@ window.services = {
 
   // 读取并解析单个会话 { blocks, meta }
   readSession,
+
+  // 读取会话文件状态 { mtime, size }（实时刷新变更检测）
+  statSession,
 
   // 解析会话文本 / 格式化为 Markdown（导出复用）
   parseSession,

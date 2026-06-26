@@ -20,6 +20,18 @@ const sessionDetail = ref<{ blocks: any[]; meta: any } | null>(null)
 const selectedSession = ref<any>(null)
 const detailLoading = ref(false)
 
+// ---- 实时刷新：打开会话即轮询文件变更，增量重读并贴底跟随 ----
+const autoRefresh = ref(true) // 默认开启，可暂停
+const scrollEl = ref<HTMLElement | null>(null)
+const showJumpBottom = ref(false) // 不在底部 → 显示「滚动到底部」按钮
+const hasNew = ref(false) // 在上方翻看时底部来了新消息 → 触发绿色高亮
+const newCount = ref(0) // hasNew 期间累计的新增提问数，用于「N 条新提问」
+let seenQCount = 0 // 用户「看到底部」时的提问数基线，与当前提问数之差即新提问数
+const POLL_MS = 800 // 检测间隔：仅一次 statSync，变化才重读，故可提频降延迟而不增成本
+const NEAR_BOTTOM_PX = 80
+let pollTimer: number | null = null
+let lastSig = '' // 上次已加载文件的签名（mtime:size），用于跳过无变化的轮询
+
 // 提问导航：收集所有用户提问，支持上下跳转与列表跳转
 const blockEls: Record<number, HTMLElement> = {}
 const setBlockRef = (el: any, i: number) => { if (el) blockEls[i] = el as HTMLElement }
@@ -36,12 +48,12 @@ const cleanInterrupt = (text: string) => (text || '')
 const interruptLabel = (text: string) => (/for tool use/.test(text || '') ? '用户已取消工具调用' : '用户已取消')
 
 const userQuestions = computed(() => {
-  const out: { index: number; text: string }[] = []
+  const out: { index: number; text: string; ts: string }[] = []
   if (sessionDetail.value) {
     sessionDetail.value.blocks.forEach((b: any, i: number) => {
       if (b.kind === 'user' && !isInterruptOnly(b.text)) {
         const text = b.command ? (b.command.name + (b.command.args ? ' ' + b.command.args : '')) : cleanInterrupt(b.text)
-        out.push({ index: i, text })
+        out.push({ index: i, text, ts: b.ts || '' })
       }
     })
   }
@@ -49,6 +61,7 @@ const userQuestions = computed(() => {
 })
 const previewText = (t: string) => (t || '').replace(/\s+/g, ' ').trim().slice(0, 60)
 const jumpToBlock = (i: number) => {
+  armSpySuppress() // 显式跳转：锁住 scrollspy，避免平滑滚动把刚选定的序号覆盖
   const el = blockEls[i]
   if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
   highlightIdx.value = i
@@ -218,6 +231,7 @@ const flatItems = computed(() => [
 
 const load = () => {
   error.value = ''
+  stopPoll()
   selected.value = null
   memoryDetail.value = null
   sessionDetail.value = null
@@ -260,9 +274,19 @@ const sanitize = (html: string) => html
   .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
   .replace(/javascript:/gi, '')
 
+// 按文本缓存渲染结果：会话为 append-only，刷新时旧块文本不变 → 命中缓存，
+// 只对新增/正在增长的块跑 marked，避免每次刷新重渲染整段对话造成卡顿。
+const mdCache = new Map<string, string>()
 const renderMarkdown = (text: string) => {
-  try { return sanitize(marked.parse(text || '', { breaks: true }) as string) }
-  catch (_) { return escapeHtml(text || '') }
+  const key = text || ''
+  const cached = mdCache.get(key)
+  if (cached !== undefined) return cached
+  let html: string
+  try { html = sanitize(marked.parse(key, { breaks: true }) as string) }
+  catch (_) { html = escapeHtml(key) }
+  if (mdCache.size > 1500) mdCache.clear() // 长流式会话兜底，防止无界增长
+  mdCache.set(key, html)
+  return html
 }
 
 const big = (text: string) => !!text && (text.length > 400 || text.split('\n').length > 10)
@@ -318,7 +342,118 @@ const lineDiff = (oldStr: string, newStr: string) => {
 }
 
 // ---- 选择与详情加载 ----
+const isNearBottom = () => {
+  const el = scrollEl.value
+  if (!el) return true
+  return el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
+}
+const scrollToBottom = (smooth = false) => {
+  const el = scrollEl.value
+  if (el) {
+    // 用户点击「回到底部」平滑滚动；轮询自动跟随用瞬时，避免与流式刷新互相打架
+    if (smooth && el.scrollTo) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    else el.scrollTop = el.scrollHeight
+  }
+  showJumpBottom.value = false
+  markSeen()
+}
+// 到达底部：清除新消息提示，并把当前提问数记为已读基线
+const markSeen = () => {
+  hasNew.value = false
+  newCount.value = 0
+  seenQCount = userQuestions.value.length
+}
+// 按钮文案：未读则提示新提问数（无新提问时仅「有新消息」），否则「回到底部」
+const jumpLabel = computed(() => {
+  if (!hasNew.value) return '回到底部'
+  return newCount.value > 0 ? `${newCount.value} 条新提问` : '有新消息'
+})
+// 不在底部时常驻显示「滚动到底部」按钮，贴底时隐藏；随滚动实时更新
+const updateJumpBtn = () => {
+  const el = scrollEl.value
+  const away = !!el && (el.scrollHeight - el.scrollTop - el.clientHeight > NEAR_BOTTOM_PX)
+  showJumpBottom.value = away
+  if (!away) markSeen() // 滚到底即视为新消息已读
+}
+// 显式跳转期间锁定 scrollspy，跳转动画结束(滚动停止)后才恢复，避免覆盖用户刚选定的序号
+let spySuppressed = false
+let spyTimer = 0
+const armSpySuppress = () => {
+  spySuppressed = true
+  if (spyTimer) clearTimeout(spyTimer)
+  spyTimer = window.setTimeout(() => { spySuppressed = false }, 200)
+}
+// scrollspy：按滚动位置反推当前命中的提问，驱动顶部计数与左侧高亮跟随
+const updateActiveQuestion = () => {
+  const el = scrollEl.value
+  const qs = userQuestions.value
+  if (!el || !qs.length) return
+  // 已滚到底部：直接高亮最后一条（末尾几条无法顶到视口顶，按判定线会偏前一位）
+  if (el.scrollTop > 0 && el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX) {
+    if (curQ.value !== qs.length - 1) curQ.value = qs.length - 1
+    return
+  }
+  const line = el.getBoundingClientRect().top + 8 // 容差，与点击定位 block:'start' 对齐
+  let active = 0
+  for (let i = 0; i < qs.length; i++) {
+    const bEl = blockEls[qs[i].index]
+    if (!bEl) continue
+    if (bEl.getBoundingClientRect().top <= line) active = i
+    else break // 提问按先后排列，一旦越过判定线，后续必然更靠下
+  }
+  if (curQ.value !== active) curQ.value = active
+}
+let spyRaf = 0
+const onDetailScroll = () => {
+  updateJumpBtn()
+  if (spySuppressed) { armSpySuppress(); return } // 跳转动画持续期间不断续期，停止后才放行
+  if (spyRaf) return
+  spyRaf = requestAnimationFrame(() => { spyRaf = 0; updateActiveQuestion() })
+}
+const sessionSig = (s: any) => {
+  try {
+    const st = window.services.statSession(props.project.dirName, s.sessionId)
+    return st ? st.mtime + ':' + st.size : ''
+  } catch (_) { return '' }
+}
+// 轮询触发：文件变化才重读，贴底则跟随到底，否则提示有新内容
+const refreshSession = () => {
+  const s = selectedSession.value
+  if (!s || detailLoading.value) return
+  const sig = sessionSig(s)
+  if (!sig || sig === lastSig) return
+  const wasNearBottom = isNearBottom()
+  try {
+    const next = window.services.readSession(props.project.dirName, s.sessionId)
+    if (next) { sessionDetail.value = next; lastSig = sig }
+  } catch (_) { return }
+  nextTick(() => {
+    if (wasNearBottom) { scrollToBottom() }
+    else {
+      // 在上方翻看 → 标记有未读，并按基线算出新增了几条提问
+      updateJumpBtn()
+      hasNew.value = true
+      newCount.value = Math.max(0, userQuestions.value.length - seenQCount)
+    }
+  })
+}
+const stopPoll = () => {
+  if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null }
+}
+const startPoll = () => {
+  stopPoll()
+  if (autoRefresh.value && selected.value && selected.value.type === 'session') {
+    pollTimer = window.setInterval(refreshSession, POLL_MS)
+  }
+}
+const toggleAutoRefresh = () => {
+  autoRefresh.value = !autoRefresh.value
+  if (autoRefresh.value) { startPoll(); refreshSession() } else stopPoll()
+}
+
 const selectMemory = (m: any) => {
+  stopPoll()
+  mdCache.clear()
   selected.value = { type: 'memory', id: m.fileName }
   sessionDetail.value = null
   selectedSession.value = null
@@ -331,17 +466,32 @@ const selectSession = (s: any) => {
   selectedSession.value = s
   detailLoading.value = true
   showQuestions.value = false
+  showJumpBottom.value = false
+  hasNew.value = false
+  newCount.value = 0
   curQ.value = 0
   highlightIdx.value = -1
   resetFilters()
+  stopPoll()
+  mdCache.clear()
+  lastSig = ''
   for (const k in blockEls) delete blockEls[k]
   setTimeout(() => {
     try {
       sessionDetail.value = window.services.readSession(props.project.dirName, s.sessionId)
+      lastSig = sessionSig(s)
     } catch (err: any) {
       error.value = err && err.message ? err.message : String(err)
     } finally {
       detailLoading.value = false
+      startPoll()
+      // 打开会话停在顶部，按当前位置决定是否显示「滚动到底部」按钮
+      nextTick(() => {
+        const el = scrollEl.value
+        if (el) el.scrollTop = 0
+        updateJumpBtn()
+        seenQCount = userQuestions.value.length // 打开时已有的提问视为已读，仅后续流入计入新提问
+      })
     }
   }, 0)
 }
@@ -492,7 +642,7 @@ onMounted(() => {
   load()
   window.addEventListener('keydown', onKeydown)
 })
-onUnmounted(() => window.removeEventListener('keydown', onKeydown))
+onUnmounted(() => { window.removeEventListener('keydown', onKeydown); stopPoll() })
 watch(() => props.project, load)
 </script>
 
@@ -624,6 +774,15 @@ watch(() => props.project, load)
               </div>
             </div>
             <div class="ph-actions">
+              <button
+                class="ph-act-live"
+                :class="{ on: autoRefresh }"
+                :title="autoRefresh ? '实时刷新中，有更新自动跟随，点击暂停' : '已暂停，点击开启实时刷新'"
+                @click="toggleAutoRefresh"
+              >
+                <span class="ph-live-dot"></span>
+                {{ autoRefresh ? '实时' : '暂停' }}
+              </button>
               <button class="ph-act-term" title="在终端恢复此会话" @click="doResume">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m4 17 6-6-6-6" /><path d="M12 19h8" /></svg>
                 恢复会话
@@ -685,13 +844,16 @@ watch(() => props.project, load)
                   @click="openQuestion(q, n)"
                 >
                   <span class="ph-qnum">{{ n + 1 }}</span>
-                  <span class="ph-qtext">{{ previewText(q.text) }}</span>
+                  <div class="ph-qbody">
+                    <div class="ph-qtext">{{ previewText(q.text) }}</div>
+                    <div v-if="fmtDateTime(q.ts)" class="ph-qtime">{{ fmtDateTime(q.ts) }}</div>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
 
-          <div class="ph-detail-scroll">
+          <div ref="scrollEl" class="ph-detail-scroll" @scroll="onDetailScroll">
             <div v-if="detailLoading" class="ph-placeholder">解析会话中…</div>
 
             <div v-else-if="sessionDetail" class="ph-chat">
@@ -838,6 +1000,17 @@ watch(() => props.project, load)
 
             <div v-else class="ph-placeholder">会话读取失败</div>
           </div>
+
+          <button
+            v-if="showJumpBottom"
+            class="ph-jump-bottom"
+            :class="{ 'has-new': hasNew }"
+            :title="hasNew ? jumpLabel + '，点击查看最新' : '滚动到底部'"
+            @click="scrollToBottom(true)"
+          >
+            <svg class="ph-jump-arrow" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 6 5 5 5-5" /><path d="m7 13 5 5 5-5" /></svg>
+            <span class="ph-jump-text">{{ jumpLabel }}</span>
+          </button>
         </template>
       </section>
     </div>
@@ -996,7 +1169,7 @@ watch(() => props.project, load)
 .ph-tag[data-type="reference"] { background: #f0e2fd; color: #7c39c4; }
 
 /* ===== 右侧详情 ===== */
-.ph-right { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; }
+.ph-right { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; position: relative; }
 .ph-placeholder { margin: 60px auto 0; text-align: center; color: var(--text-tertiary); font-size: 14px; }
 
 /* 详情标题固定顶部 */
@@ -1079,7 +1252,9 @@ watch(() => props.project, load)
   background: var(--primary-color); color: #fff;
   font-size: 11px; font-weight: 700; border-radius: 5px; margin-top: 1px;
 }
+.ph-qbody { flex: 1 1 auto; min-width: 0; }
 .ph-qtext { line-height: 1.4; word-break: break-word; }
+.ph-qtime { margin-top: 3px; font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .ph-detail-titlewrap { flex: 1 1 auto; min-width: 0; }
 .ph-detail-title { font-weight: 600; font-size: 14px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ph-detail-meta { display: flex; gap: 10px; font-size: 11px; color: var(--text-tertiary); margin-top: 3px; }
@@ -1107,6 +1282,58 @@ watch(() => props.project, load)
   font-size: 12px; cursor: pointer; transition: all 0.15s ease;
 }
 .ph-act-icon:hover, .ph-act-icon.on { background: var(--bg-hover); color: var(--primary-color); border-color: var(--primary-color); }
+
+/* 实时刷新开关 */
+.ph-act-live {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px; border-radius: 6px;
+  border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-secondary);
+  font-size: 12px; cursor: pointer; transition: all 0.15s ease;
+}
+.ph-act-live:hover { background: var(--bg-hover); }
+.ph-act-live.on { color: #20bf6b; border-color: rgba(32, 191, 107, 0.5); }
+.ph-live-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--text-tertiary); }
+.ph-act-live.on .ph-live-dot { background: #20bf6b; animation: ph-live-pulse 1.6s ease-in-out infinite; }
+@keyframes ph-live-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(32, 191, 107, 0.5); }
+  50% { opacity: 0.55; box-shadow: 0 0 0 4px rgba(32, 191, 107, 0); }
+}
+
+/* 回底浮动按钮（底部居中胶囊）：空闲态中性玻璃幽灵，有新消息态绿色高亮 */
+.ph-jump-bottom {
+  position: absolute; left: 50%; bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--border-color); border-radius: 999px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.6);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  color: var(--text-secondary);
+  font-size: 12.5px; line-height: 1; white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+  transition: color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+.ph-jump-bottom:hover { color: var(--text-primary); box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12); }
+.ph-jump-arrow { display: block; transition: transform 0.18s ease; }
+.ph-jump-bottom:hover .ph-jump-arrow { transform: translateY(2px); }
+.ph-jump-text { font-weight: 500; }
+
+/* 有新消息：绿色高亮 + 轻微脉冲 */
+.ph-jump-bottom.has-new {
+  border-color: transparent;
+  background: #22c55e; color: #fff;
+  box-shadow: 0 4px 14px rgba(34, 197, 94, 0.38);
+  animation: ph-jump-pulse 1.8s ease-in-out infinite;
+}
+.ph-jump-bottom.has-new:hover {
+  color: #fff; background: #1eb853;
+  box-shadow: 0 5px 16px rgba(34, 197, 94, 0.45);
+}
+@keyframes ph-jump-pulse {
+  0%, 100% { box-shadow: 0 4px 14px rgba(34, 197, 94, 0.38); }
+  50% { box-shadow: 0 4px 14px rgba(34, 197, 94, 0.38), 0 0 0 5px rgba(34, 197, 94, 0.16); }
+}
 
 /* 导出浮动下拉 */
 .ph-export-wrap { position: relative; flex: 0 0 auto; }
@@ -1558,5 +1785,8 @@ watch(() => props.project, load)
   .diff-add .diff-text { color: #7fe0a6; }
   .diff-del { background: rgba(229, 57, 53, 0.18); }
   .diff-del .diff-text { color: #f3a39b; }
+
+  /* 暗色：回底按钮空闲态玻璃底改用深色卡片色调 */
+  .ph-jump-bottom { background: rgba(42, 42, 42, 0.6); }
 }
 </style>
