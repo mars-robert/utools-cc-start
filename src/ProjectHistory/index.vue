@@ -1425,15 +1425,22 @@ watch(() => props.project, load)
                           :class="{ clickable: !!subagentById(it.block.subtask.agentId) }"
                           @click.stop="subagentById(it.block.subtask.agentId) && switchView(it.block.subtask.agentId, it.index)"
                         >
-                          <span class="agent-sub-arrow">↳</span>
-                          <span class="agent-sub-name">子任务：{{ (subagentById(it.block.subtask.agentId) && subagentById(it.block.subtask.agentId).description) || it.block.subtask.agentId }}</span>
-                          <span class="agent-sub-meta">
-                            <span v-if="it.block.subtask.status" class="csn-status" :class="'st-' + it.block.subtask.status">{{ it.block.subtask.status }}</span>
-                            <span v-if="it.block.subtask.tokens">↑ {{ fmtTokK(it.block.subtask.tokens) }} tok</span>
-                            <span v-if="it.block.subtask.toolUses">{{ it.block.subtask.toolUses }} 调用</span>
-                            <span v-if="fmtDuration(it.block.subtask.durationMs)">{{ fmtDuration(it.block.subtask.durationMs) }}</span>
+                          <span class="agent-sub-ico">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="18" r="2.4" /><circle cx="18" cy="12" r="2.4" /><path d="M8.2 6.6c5 .4 6.6 1.8 7.4 4.2M8.2 17.4c5-.4 6.6-1.8 7.4-4.2" /></svg>
                           </span>
-                          <span v-if="subagentById(it.block.subtask.agentId)" class="agent-sub-go">查看 →</span>
+                          <div class="agent-sub-main">
+                            <div class="agent-sub-title">
+                              <span class="agent-sub-kbadge">子任务</span>
+                              <span class="agent-sub-name">{{ (subagentById(it.block.subtask.agentId) && subagentById(it.block.subtask.agentId).description) || it.block.subtask.agentId }}</span>
+                            </div>
+                            <div class="agent-sub-meta">
+                              <span v-if="it.block.subtask.status" class="agent-sub-status" :class="'st-' + it.block.subtask.status"><i class="dot"></i>{{ it.block.subtask.status }}</span>
+                              <span v-if="it.block.subtask.tokens">↑ {{ fmtTokK(it.block.subtask.tokens) }} tok</span>
+                              <span v-if="it.block.subtask.toolUses">{{ it.block.subtask.toolUses }} 次调用</span>
+                              <span v-if="fmtDuration(it.block.subtask.durationMs)">{{ fmtDuration(it.block.subtask.durationMs) }}</span>
+                            </div>
+                          </div>
+                          <span v-if="subagentById(it.block.subtask.agentId)" class="agent-sub-go">查看<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg></span>
                         </div>
 
                         <!-- 思考：默认折叠（头部一行预览），展开看全文 -->
@@ -2780,19 +2787,34 @@ watch(() => props.project, load)
 
 /* ---- Agent 工具调用：子任务结果摘要 + 进入子任务入口 ---- */
 .agent-sub {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px;
-  margin: 4px 0 2px; padding: 5px 9px;
-  border-left: 2px solid var(--primary-color); border-radius: 0 6px 6px 0;
-  background: var(--bg-hover); font-size: 11.5px; color: var(--text-secondary);
+  display: flex; align-items: center; gap: 10px;
+  margin: 7px 0 3px; padding: 8px 10px;
+  border: 1px solid var(--border-color); border-radius: 9px;
+  background: var(--bg-hover);
 }
-.agent-sub.clickable { cursor: pointer; transition: background 0.12s ease; }
-.agent-sub.clickable:hover { background: var(--card-bg); }
-.agent-sub-arrow { flex: 0 0 auto; color: var(--primary-color); font-weight: 700; }
-.agent-sub-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-weight: 600; }
-.agent-sub-meta { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; color: var(--text-tertiary); }
-.agent-sub-go { flex: 0 0 auto; color: var(--primary-color); font-weight: 600; }
-.csn-status { padding: 0 6px; border-radius: 999px; background: rgba(127, 127, 127, 0.16); color: var(--text-secondary); text-transform: capitalize; }
-.csn-status.st-completed { background: rgba(92, 197, 133, 0.16); color: #3aa564; }
+.agent-sub.clickable { cursor: pointer; transition: border-color 0.12s ease, background 0.12s ease; }
+.agent-sub.clickable:hover { border-color: var(--primary-color); background: var(--card-bg); }
+.agent-sub-ico {
+  flex: 0 0 auto; width: 28px; height: 28px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--primary-color); color: #fff;
+}
+.agent-sub-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.agent-sub-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.agent-sub-kbadge { flex: 0 0 auto; font-size: 10px; font-weight: 600; color: var(--primary-color); }
+.agent-sub-name { flex: 1 1 auto; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-sub-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; font-size: 11px; color: var(--text-tertiary); }
+.agent-sub-status { display: inline-flex; align-items: center; gap: 4px; text-transform: capitalize; }
+.agent-sub-status .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.agent-sub-status.st-completed { color: #3aa564; }
+.agent-sub-go {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px;
+  padding: 4px 11px; border-radius: 7px;
+  font-size: 11.5px; font-weight: 600; color: var(--primary-color);
+  border: 1px solid var(--border-color);
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.agent-sub.clickable:hover .agent-sub-go { background: var(--primary-color); color: #fff; border-color: var(--primary-color); }
 .ph-act-back { border-color: var(--primary-color); color: var(--primary-color); }
 .ph-act-back:hover { background: var(--primary-color); color: #fff; }
 </style>
