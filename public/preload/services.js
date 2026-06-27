@@ -1165,6 +1165,16 @@ function parseCommand (text) {
   return { name, args: pick('command-args'), message: pick('command-message') }
 }
 
+// 解析 harness 注入的 <task-notification> 消息 → { agentId, summary }；非此类返回 null
+function parseTaskNotification (text) {
+  if (typeof text !== 'string' || text.replace(/^\s+/, '').indexOf('<task-notification>') !== 0) return null
+  const pick = (tag) => {
+    const m = text.match(new RegExp('<' + tag + '>([\\s\\S]*?)</' + tag + '>'))
+    return m ? m[1].trim() : ''
+  }
+  return { agentId: pick('task-id'), summary: pick('summary') || pick('status') || '子任务事件' }
+}
+
 // 解析会话 jsonl 文本为有序消息块 + 元信息
 function parseSession (content) {
   const blocks = []
@@ -1225,6 +1235,9 @@ function parseSession (content) {
       const rawText = typeof c === 'string'
         ? c
         : (Array.isArray(c) ? c.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n') : '')
+      // 系统注入的子任务完成通知：非用户输入，作为系统提示块（带 agentId 供前端跳转）
+      const notif = parseTaskNotification(rawText)
+      if (notif) { blocks.push({ kind: 'system', subtype: 'subtask_notice', text: notif.summary, agentId: notif.agentId, sidechain, ts }); meta.count++; continue }
       const cmd = parseCommand(rawText)
       if (cmd) { blocks.push({ kind: 'user', command: cmd, text: cmd.args || '', sidechain, ts }); meta.count++; continue }
     }
