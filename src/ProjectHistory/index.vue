@@ -641,7 +641,7 @@ const sessionSig = (s: any) => {
 // 轮询触发：文件变化才重读，贴底则跟随到底，否则提示有新内容
 const refreshSession = () => {
   const s = selectedSession.value
-  if (!s || detailLoading.value) return
+  if (!s || detailLoading.value || currentAgent.value) return
   const sig = sessionSig(s)
   if (!sig || sig === lastSig) return
   const wasNearBottom = isNearBottom()
@@ -690,7 +690,7 @@ const refreshActive = () => {
   const ids = new Set(sessions.value.map((s: any) => s.sessionId))
   if ([...activeIds.value].some((id) => !ids.has(id))) reloadSessions()
   const s = selectedSession.value
-  if (s && selected.value && selected.value.type === 'session') {
+  if (s && selected.value && selected.value.type === 'session' && !currentAgent.value) {
     const live = isSessionLive(s.sessionId)
     if (live !== currentLive.value) {
       // 在线↔离线切换：默认联动实时刷新（上线→开，下线→暂停）；切换间用户的手动开关仍被尊重
@@ -779,6 +779,7 @@ const switchView = (agentId: string | null) => {
   stopPoll()
   mdCache.clear()
   for (const k in blockEls) delete blockEls[k]
+  for (const k in expandedKeys) delete expandedKeys[k]
   const dn = props.project.dirName
   const sid = selectedSession.value.sessionId
   try {
@@ -883,7 +884,7 @@ const doExportMd = () => {
   let r
   if (currentAgent.value) {
     // 子任务：从已加载模型生成 Markdown
-    const md = window.services.sessionToMarkdown(sessionDetail.value, currentAgent.value)
+    const md = window.services.sessionToMarkdown(sessionDetail.value, currentViewLabel.value)
     r = window.services.writeTextFile(target, md)
   } else {
     r = window.services.exportSessionToFile(props.project.dirName, selectedSession.value.sessionId, target)
