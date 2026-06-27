@@ -102,24 +102,23 @@ const userQuestions = computed(() => {
   return out
 })
 const previewText = (t: string) => (t || '').replace(/\s+/g, ' ').trim().slice(0, 60)
-const jumpToBlock = (i: number, smooth = true) => {
-  armSpySuppress() // 显式跳转：锁住 scrollspy，避免滚动把刚选定的序号覆盖
-  const el = curBlockEls()[i]
-  const sc = scrollEl.value
-  if (el && el.scrollIntoView) {
-    if (smooth && sc) {
-      // 两段式平滑：先瞬时定位（取目标真实位置、触发其周边渲染），远距离则瞬时退回目标前一屏，
-      // 再平滑滑到目标——平滑段只跨约一屏且都是已渲染内容，既有平滑动画又不飞渲整页、不丢帧（序号不跳）。
-      const before = sc.scrollTop
-      el.scrollIntoView({ behavior: 'auto', block: 'start' })
-      const targetTop = sc.scrollTop
-      const far = Math.abs(targetTop - before) > sc.clientHeight * 1.5
-      sc.scrollTop = far ? targetTop - (targetTop >= before ? 1 : -1) * sc.clientHeight : before
-      requestAnimationFrame(() => { scrollEl.value?.scrollTo({ top: targetTop, behavior: 'smooth' }) })
-    } else {
-      el.scrollIntoView({ behavior: 'auto', block: 'start' })
-    }
+// content-visibility 下，瞬时滚动后目标周边渲染会修正高度、令落点偏移；
+// 跨帧对当前（逐渐精确的）布局重新应用定位，直至 scrollTop 收敛——落点精确、无平滑动画、干脆利落。
+const settleScroll = (apply: () => void) => {
+  apply()
+  let last = -1
+  let tries = 0
+  const step = () => {
+    apply()
+    const top = scrollEl.value ? scrollEl.value.scrollTop : 0
+    if (top !== last && ++tries < 6) { last = top; requestAnimationFrame(step) }
   }
+  requestAnimationFrame(step)
+}
+const jumpToBlock = (i: number) => {
+  armSpySuppress() // 显式跳转：锁住 scrollspy，避免滚动把刚选定的序号覆盖
+  if (!curBlockEls()[i]) return
+  settleScroll(() => curBlockEls()[i]?.scrollIntoView({ block: 'start' }))
   highlightIdx.value = i
   setTimeout(() => { if (highlightIdx.value === i) highlightIdx.value = -1 }, 1200)
 }
@@ -127,7 +126,7 @@ const jumpToQuestion = (n: number) => {
   const qs = userQuestions.value
   if (!qs.length) return
   curQ.value = (n + qs.length) % qs.length
-  jumpToBlock(qs[curQ.value].index) // 两段式平滑跳转
+  jumpToBlock(qs[curQ.value].index) // 瞬时精确跳转
 }
 const openQuestion = (q: any, n: number) => {
   curQ.value = n
@@ -621,28 +620,9 @@ const isNearBottom = () => {
   if (!el) return true
   return el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
 }
-const scrollToBottom = (smooth = false) => {
-  const el = scrollEl.value
-  if (el) {
-    if (smooth) {
-      // 用户点「回到底部」：两段式平滑。远距离先瞬时跳到底部前一屏（只渲染底部两屏），
-      // 再平滑滑到底——平滑段只跨约一屏的已渲染内容，流畅且不飞渲整页。
-      const target = el.scrollHeight - el.clientHeight
-      if (target - el.scrollTop > el.clientHeight * 1.5) el.scrollTop = Math.max(0, target - el.clientHeight)
-      requestAnimationFrame(() => { const e = scrollEl.value; if (e) e.scrollTo({ top: e.scrollHeight, behavior: 'smooth' }) })
-    } else {
-      // 轮询自动跟随：瞬时贴底，避免与流式刷新打架；content-visibility 下底部渲染后高度会变，跨几帧重设直至稳定。
-      el.scrollTop = el.scrollHeight
-      let tries = 0
-      const settle = () => {
-        const e = scrollEl.value
-        if (!e) return
-        e.scrollTop = e.scrollHeight
-        if (++tries < 3) requestAnimationFrame(settle)
-      }
-      requestAnimationFrame(settle)
-    }
-  }
+const scrollToBottom = () => {
+  // 瞬时贴底：content-visibility 下底部渲染后高度会变，settleScroll 跨帧重设直至真正到底（落点精确、按钮正确消失）。
+  settleScroll(() => { const e = scrollEl.value; if (e) e.scrollTop = e.scrollHeight })
   showJumpBottom.value = false
   markSeen()
 }
@@ -888,7 +868,7 @@ const switchView = (agentId: string | null, fromIndex: number | null = null) => 
 const returnToMain = () => {
   const idx = returnToIndex.value
   switchView(null)
-  if (idx != null) nextTick(() => jumpToBlock(idx, false)) // 返回主任务：直接定位到来源锚点，不做平滑滚动
+  if (idx != null) nextTick(() => jumpToBlock(idx)) // 返回主任务：直接定位到来源锚点
 }
 
 const selectItem = (item: any) => {
@@ -1760,7 +1740,7 @@ watch(() => props.project, load)
             class="ph-jump-bottom"
             :class="{ 'has-new': hasNew }"
             :title="hasNew ? jumpLabel + '，点击查看最新' : '滚动到底部'"
-            @click="scrollToBottom(true)"
+            @click="scrollToBottom()"
           >
             <svg class="ph-jump-arrow" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 6 5 5 5-5" /><path d="m7 13 5 5 5-5" /></svg>
             <span class="ph-jump-text">{{ jumpLabel }}</span>
