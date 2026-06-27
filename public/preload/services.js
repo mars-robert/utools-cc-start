@@ -1296,6 +1296,46 @@ function statSession (dirName, sessionId) {
   } catch (_) { return null }
 }
 
+// 列出某会话的子任务（子代理）：读 <sessionId>/subagents/agent-*.meta.json
+function listSubagents (dirName, sessionId) {
+  const projectDir = getProjectDirSafe(dirName)
+  if (!projectDir) return []
+  if (!isSafeSegment(sessionId)) return []
+  const dir = path.join(projectDir, sessionId, 'subagents')
+  let names
+  try { names = fs.readdirSync(dir).filter((n) => /^agent-.+\.meta\.json$/.test(n)) } catch (_) { return [] }
+  const out = []
+  for (const name of names) {
+    const agentId = name.replace(/^agent-/, '').replace(/\.meta\.json$/, '')
+    if (!isSafeSegment(agentId)) continue
+    let meta
+    try { meta = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf-8')) } catch (_) { continue }
+    let mtime = 0
+    try { mtime = fs.statSync(path.join(dir, 'agent-' + agentId + '.jsonl')).mtimeMs } catch (_) { /* 无 jsonl 仍保留条目 */ }
+    out.push({
+      agentId,
+      agentType: (meta && meta.agentType) || '',
+      description: (meta && meta.description) || '',
+      toolUseId: (meta && meta.toolUseId) || '',
+      spawnDepth: (meta && meta.spawnDepth) || 0,
+      mtime
+    })
+  }
+  out.sort((a, b) => a.mtime - b.mtime)
+  return out
+}
+
+// 读取并解析某子任务（子代理）转录 { blocks, meta }
+function readSubagent (dirName, sessionId, agentId) {
+  const projectDir = getProjectDirSafe(dirName)
+  if (!projectDir) return null
+  if (!isSafeSegment(sessionId) || !isSafeSegment(agentId)) return null
+  try {
+    const content = fs.readFileSync(path.join(projectDir, sessionId, 'subagents', 'agent-' + agentId + '.jsonl'), 'utf-8')
+    return parseSession(content)
+  } catch (_) { return null }
+}
+
 function safeStringify (v) {
   if (typeof v === 'string') return v
   try { return JSON.stringify(v, null, 2) } catch (_) { return String(v) }
@@ -1465,6 +1505,12 @@ window.services = {
 
   // 读取会话文件状态 { mtime, size }（实时刷新变更检测）
   statSession,
+
+  // 列出某会话的子任务（子代理）摘要
+  listSubagents,
+
+  // 读取并解析某子任务转录 { blocks, meta }
+  readSubagent,
 
   // 列出当前项目下「正在运行的 claude 实例打开的 session」（精确活跃检测）
   listActiveSessions (cwd) {
