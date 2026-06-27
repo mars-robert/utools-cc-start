@@ -2599,7 +2599,7 @@ watch(() => props.project, load)
 
 /* ---- 查找命中高亮（CSS Custom Highlight API）----
    用不透明背景 + 固定文字色，避免半透明在复杂代码/diff 底色上混色发灰看不清。
-   当前焦点用亮黄最醒目，其它命中用橙色作次级区分。 */
-::highlight(ph-find) { background-color: #ff9e42; color: #1a1a1a; }
+   当前焦点用亮黄最醒目；其它命中用青色冷色，避免与橙色的「工具调用」强调色撞色。 */
+::highlight(ph-find) { background-color: #22d3ee; color: #0a2b33; }
 ::highlight(ph-find-current) { background-color: #ffe100; color: #000; }
 </style>
