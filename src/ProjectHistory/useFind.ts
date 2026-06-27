@@ -4,6 +4,7 @@ import { compileQuery, findInText } from './find-core.js'
 
 export interface FindHost {
   scrollEl: Ref<HTMLElement | null>
+  getWalkRoot?: () => HTMLElement | null // 查找遍历的根（双视图时为当前可见的 .ph-chat）；缺省用 scrollEl
   getBlocks: () => any[] | undefined
   isKindVisible: (kind: string) => boolean
   blockSearchText: (block: any) => string
@@ -112,7 +113,7 @@ export function useFind (host: FindHost) {
 
     // 3) 遍历 DOM 文本节点建 Range（折叠/隐藏内容天然不在 DOM 中）
     ranges = []
-    const root = host.scrollEl.value
+    const root = (host.getWalkRoot && host.getWalkRoot()) || host.scrollEl.value
     if (re && root) {
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
       let node: Node | null

@@ -57,7 +57,8 @@ const POLL_MS = 800 // 检测间隔：仅一次 statSync，变化才重读，故
 const NEAR_BOTTOM_PX = 80
 let pollTimer: number | null = null
 let lastSig = '' // 上次已加载文件的签名（mtime:size），用于跳过无变化的轮询
-let mainDetail: any = null // 主任务解析结果缓存；子任务返回时直接还原，避免重读重解析
+const mainDetail = ref<any>(null) // 主任务解析结果（始终挂载的主视图数据源）
+const subDetail = ref<any>(null) // 当前子任务解析结果（子视图数据源）
 let mainSig = '' // mainDetail 对应的文件签名，返回后据此判断是否需轮询重读
 
 // 活跃会话：精确识别「正在运行的 claude 实例打开的 session」，只对其实时刷新
@@ -68,8 +69,14 @@ const LIVE_MS = 2500 // 活跃集刷新间隔
 let liveTimer: number | null = null
 
 // 提问导航：收集所有用户提问，支持上下跳转与列表跳转
-const blockEls: Record<number, HTMLElement> = {}
-const setBlockRef = (el: any, i: number) => { if (el) blockEls[i] = el as HTMLElement }
+// 主/子两套视图各自的块元素引用与 .ph-chat 根（v-show 双视图常驻，避免相同下标互相覆盖）
+const mainBlockEls: Record<number, HTMLElement> = {}
+const subBlockEls: Record<number, HTMLElement> = {}
+const setMainBlockRef = (el: any, i: number) => { if (el) mainBlockEls[i] = el as HTMLElement }
+const setSubBlockRef = (el: any, i: number) => { if (el) subBlockEls[i] = el as HTMLElement }
+const curBlockEls = () => (currentAgent.value ? subBlockEls : mainBlockEls)
+const chatEls: Record<string, HTMLElement | null> = { main: null, sub: null }
+const curChatEl = () => chatEls[currentAgent.value ? 'sub' : 'main'] || null
 const showQuestions = ref(false)
 const curQ = ref(0)
 const highlightIdx = ref(-1)
@@ -97,7 +104,7 @@ const userQuestions = computed(() => {
 const previewText = (t: string) => (t || '').replace(/\s+/g, ' ').trim().slice(0, 60)
 const jumpToBlock = (i: number, smooth = true) => {
   armSpySuppress() // 显式跳转：锁住 scrollspy，避免平滑滚动把刚选定的序号覆盖
-  const el = blockEls[i]
+  const el = curBlockEls()[i]
   if (el && el.scrollIntoView) el.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' })
   highlightIdx.value = i
   setTimeout(() => { if (highlightIdx.value === i) highlightIdx.value = -1 }, 1200)
@@ -185,6 +192,7 @@ const {
   open: findOpen, close: findClose, next: findNext, prev: findPrev, refresh: findRefresh
 } = useFind({
   scrollEl,
+  getWalkRoot: () => curChatEl(),
   getBlocks: () => sessionDetail.value?.blocks,
   isKindVisible: (k: string) => !!visibleKinds[k],
   blockSearchText,
@@ -270,11 +278,11 @@ const claudeHeadTitle = (m: any) => {
 }
 
 // 对话模式分组：用户提问为独立卡片，其后连续的非用户块聚合为一个 Claude 回复大卡片
-const turns = computed(() => {
+const buildTurns = (detail: any) => {
   const out: any[] = []
   let cur: any = null
-  if (sessionDetail.value) {
-    sessionDetail.value.blocks.forEach((b: any, i: number) => {
+  if (detail) {
+    detail.blocks.forEach((b: any, i: number) => {
       if (b.kind === 'user' && isInterruptOnly(b.text)) {
         out.push({ type: 'notice', block: b, index: i }); cur = null
       } else if (b.kind === 'user') {
@@ -287,7 +295,14 @@ const turns = computed(() => {
   }
   for (const t of out) { if (t.type === 'claude') t.meta = claudeMeta(t.items) }
   return out
-})
+}
+const mainTurns = computed(() => buildTurns(mainDetail.value))
+const subTurns = computed(() => buildTurns(subDetail.value))
+// 双视图：主任务始终挂载（仅 v-show 切换可见），稳定 :key 使切换时不重建主任务 DOM → 返回零重渲染。
+const views = computed(() => [
+  { id: 'main', turns: mainTurns.value, setRef: setMainBlockRef, show: !currentAgent.value },
+  { id: 'sub', turns: subTurns.value, setRef: setSubBlockRef, show: !!currentAgent.value }
+])
 const claudeVisible = (t: any) => t.items.some((it: any) => visibleKinds[it.block.kind])
 
 // 用户提问始终显示；其余类型按筛选显隐
@@ -324,6 +339,8 @@ const load = () => {
   selected.value = null
   memoryDetail.value = null
   sessionDetail.value = null
+  mainDetail.value = null
+  subDetail.value = null
   selectedSession.value = null
   const p = props.project
   if (!p || !p.dirName) { memories.value = []; sessions.value = []; return }
@@ -636,7 +653,7 @@ const updateActiveQuestion = () => {
   const line = el.getBoundingClientRect().top + 8 // 容差，与点击定位 block:'start' 对齐
   let active = 0
   for (let i = 0; i < qs.length; i++) {
-    const bEl = blockEls[qs[i].index]
+    const bEl = curBlockEls()[qs[i].index]
     if (!bEl) continue
     if (bEl.getBoundingClientRect().top <= line) active = i
     else break // 提问按先后排列，一旦越过判定线，后续必然更靠下
@@ -665,7 +682,7 @@ const refreshSession = () => {
   const wasNearBottom = isNearBottom()
   try {
     const next = window.services.readSession(props.project.dirName, s.sessionId)
-    if (next) { sessionDetail.value = next; lastSig = sig; mainDetail = next; mainSig = sig }
+    if (next) { mainDetail.value = next; sessionDetail.value = next; lastSig = sig; mainSig = sig }
   } catch (_) { return }
   nextTick(() => {
     if (wasNearBottom) { scrollToBottom() }
@@ -732,6 +749,8 @@ const selectMemory = (m: any) => {
   mdCache.clear()
   selected.value = { type: 'memory', id: m.fileName }
   sessionDetail.value = null
+  mainDetail.value = null
+  subDetail.value = null
   selectedSession.value = null
   memoryDetail.value = window.services.readMemory(props.project.dirName, m.fileName)
 }
@@ -756,13 +775,16 @@ const selectSession = (s: any) => {
   stopPoll()
   mdCache.clear()
   lastSig = ''
-  for (const k in blockEls) delete blockEls[k]
+  for (const k in mainBlockEls) delete mainBlockEls[k]
+  for (const k in subBlockEls) delete subBlockEls[k]
+  subDetail.value = null
   setTimeout(() => {
     try {
-      sessionDetail.value = window.services.readSession(props.project.dirName, s.sessionId)
+      mainDetail.value = window.services.readSession(props.project.dirName, s.sessionId)
+      sessionDetail.value = mainDetail.value
       subagents.value = window.services.listSubagents(props.project.dirName, s.sessionId) || []
       lastSig = sessionSig(s)
-      mainDetail = sessionDetail.value; mainSig = lastSig
+      mainSig = lastSig
     } catch (err: any) {
       error.value = err && err.message ? err.message : String(err)
     } finally {
@@ -797,15 +819,18 @@ const switchView = (agentId: string | null, fromIndex: number | null = null) => 
   highlightIdx.value = -1
   resetFilters()
   stopPoll()
-  for (const k in blockEls) delete blockEls[k]
+  for (const k in subBlockEls) delete subBlockEls[k]
   for (const k in expandedKeys) delete expandedKeys[k]
   const dn = props.project.dirName
   const sid = selectedSession.value.sessionId
   try {
-    // 主任务直接还原缓存（不重读不重解析，保留 mdCache 命中即时渲染），仅子任务读文件
-    sessionDetail.value = agentId
-      ? window.services.readSubagent(dn, sid, agentId)
-      : (mainDetail || window.services.readSession(dn, sid))
+    if (agentId) {
+      subDetail.value = window.services.readSubagent(dn, sid, agentId)
+      sessionDetail.value = subDetail.value
+    } else {
+      // 返回主任务：主视图 DOM 始终挂载，仅切回数据与可见性，零重渲染
+      sessionDetail.value = mainDetail.value
+    }
   } catch (err: any) {
     error.value = err && err.message ? err.message : String(err)
   }
@@ -943,7 +968,7 @@ const doExportHtml = async () => {
   // 临时全部展开后截取实际渲染的 DOM，保证内容完整且效果与详情页一致
   forceExpand.value = true
   await nextTick()
-  const chat = document.querySelector('.ph-detail-scroll .ph-chat')
+  const chat = curChatEl() || document.querySelector('.ph-detail-scroll .ph-chat')
   const inner = chat ? chat.outerHTML : ''
   forceExpand.value = false
   const title = String((selectedSession.value.title || selectedSession.value.sessionId) || '会话记录')
@@ -1199,7 +1224,7 @@ watch(() => props.project, load)
             <div class="ph-actions">
               <button v-if="currentAgent" class="ph-act-term ph-act-back" title="返回主任务" @click="returnToMain()">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7" /><path d="M19 12H5" /></svg>
-                返回主任务
+                主任务
               </button>
               <button
                 v-if="!currentAgent"
@@ -1349,12 +1374,19 @@ watch(() => props.project, load)
           <div ref="scrollEl" class="ph-detail-scroll" @scroll="onDetailScroll">
             <div v-if="detailLoading" class="ph-placeholder">解析会话中…</div>
 
-            <div v-else-if="sessionDetail" class="ph-chat">
-              <template v-for="(t, ti) in turns" :key="ti">
+            <template v-else>
+              <div
+                v-for="view in views"
+                :key="view.id"
+                v-show="view.show"
+                :ref="(el) => (chatEls[view.id] = el)"
+                class="ph-chat"
+              >
+              <template v-for="(t, ti) in view.turns" :key="ti">
                 <!-- 用户提问卡片 -->
                 <div
                   v-if="t.type === 'user' && visibleKinds.user"
-                  :ref="(el) => setBlockRef(el, t.index)"
+                  :ref="(el) => view.setRef(el,t.index)"
                   class="chat-user"
                   :class="{ 'blk-flash': highlightIdx === t.index }"
                 >
@@ -1378,7 +1410,7 @@ watch(() => props.project, load)
                 <!-- 用户取消通知（非对话气泡形式） -->
                 <div
                   v-else-if="t.type === 'notice'"
-                  :ref="(el) => setBlockRef(el, t.index)"
+                  :ref="(el) => view.setRef(el,t.index)"
                   class="chat-notice"
                   :class="{ 'blk-flash': highlightIdx === t.index }"
                 >
@@ -1399,7 +1431,7 @@ watch(() => props.project, load)
                       <!-- 助手正文：主回复，无标签 -->
                       <div
                         v-if="it.block.kind === 'assistant' && visibleKinds.assistant"
-                        :ref="(el) => setBlockRef(el, it.index)"
+                        :ref="(el) => view.setRef(el,it.index)"
                         class="sub-text ph-md"
                         :class="{ 'blk-flash': highlightIdx === it.index }"
                         v-html="renderMarkdown(it.block.text)"
@@ -1408,7 +1440,7 @@ watch(() => props.project, load)
                       <!-- 其它类型：带类型标签的小卡 -->
                       <div
                         v-else-if="it.block.kind !== 'assistant' && visibleKinds[it.block.kind] && (it.block.kind !== 'system' || sysVisible(it.block))"
-                        :ref="(el) => setBlockRef(el, it.index)"
+                        :ref="(el) => view.setRef(el,it.index)"
                         class="sub"
                         :class="[kindMeta(it.block.kind).cls, {
                           'blk-flash': highlightIdx === it.index,
@@ -1675,9 +1707,10 @@ watch(() => props.project, load)
                   </div>
                 </div>
               </template>
-            </div>
+              </div>
+            </template>
 
-            <div v-else class="ph-placeholder">会话读取失败</div>
+            <div v-if="!mainDetail && !subDetail" class="ph-placeholder">会话读取失败</div>
           </div>
 
           <button
