@@ -1,11 +1,11 @@
 /**
- * @file 测试 find-core.cjs：历史详情页内查找的纯匹配核心
+ * @file 测试 find-core.js：历史详情页内查找的纯匹配核心
  *   - escapeRegExp：转义正则元字符
  *   - compileQuery：按 大小写/全字/正则 选项编译全局正则
  *   - findInText：单段文本求所有匹配区间，零宽不死循环
  */
 
-const { escapeRegExp, compileQuery, findInText } = require('../src/ProjectHistory/find-core.cjs')
+const { escapeRegExp, compileQuery, findInText } = require('../src/ProjectHistory/find-core.js')
 
 // ---- 迷你测试骨架（与 services-active.test.cjs 一致）----
 function test (name, fn) {

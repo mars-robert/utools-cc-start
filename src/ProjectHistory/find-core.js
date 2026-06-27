@@ -1,14 +1,13 @@
-'use strict'
-
-// 历史详情页内查找的纯匹配核心。CommonJS，便于 node --test 直接 require。
+// 历史详情页内查找的纯匹配核心。ESM 模块：前端经 Vite 原生 import；
+// 测试在 node（支持 require(ESM)）下 require 加载。
 
 // 转义正则元字符，使字面量查询不被当作正则
-function escapeRegExp (s) {
+export function escapeRegExp (s) {
   return String(s == null ? '' : s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 // 编译查找条件为「全局」正则；空查询返回 re=null；非法正则返回 error
-function compileQuery (query, opts) {
+export function compileQuery (query, opts) {
   const q = query == null ? '' : String(query)
   if (!q) return { re: null, error: '' }
   const o = opts || {}
@@ -24,7 +23,7 @@ function compileQuery (query, opts) {
 }
 
 // 求 text 中所有匹配区间 [start,end)；忽略零宽匹配并防死循环
-function findInText (text, re) {
+export function findInText (text, re) {
   const out = []
   const s = typeof text === 'string' ? text : ''
   if (!re || !s) return out
@@ -38,5 +37,3 @@ function findInText (text, re) {
   }
   return out
 }
-
-module.exports = { escapeRegExp, compileQuery, findInText }

@@ -1,6 +1,6 @@
 import { nextTick, ref, watch, type Ref } from 'vue'
-// @ts-ignore 纯 CJS 匹配核心，无类型声明
-import { compileQuery, findInText } from './find-core.cjs'
+// @ts-ignore 纯匹配核心（JS 模块，无类型声明）
+import { compileQuery, findInText } from './find-core.js'
 
 export interface FindHost {
   scrollEl: Ref<HTMLElement | null>
