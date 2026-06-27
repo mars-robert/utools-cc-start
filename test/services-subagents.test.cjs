@@ -40,3 +40,10 @@ test('parseSession: 普通用户消息不受影响', () => {
   assert.equal(blocks[0].kind, 'user')
   assert.equal(blocks[0].text, 'real question')
 })
+
+test('parseSession: 含 <task-notification> 但不在开头仍按用户解析', () => {
+  const { services } = pureEnv()
+  const jsonl = line({ type: 'user', message: { role: 'user', content: 'see <task-notification><task-id>x</task-id></task-notification> above' } })
+  const { blocks } = services.parseSession(jsonl)
+  assert.equal(blocks[0].kind, 'user')
+})
