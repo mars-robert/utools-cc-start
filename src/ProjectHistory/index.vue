@@ -1715,7 +1715,7 @@ watch(() => props.project, load)
               </div>
             </template>
 
-            <div v-if="!mainDetail && !subDetail" class="ph-placeholder">会话读取失败</div>
+            <div v-if="!detailLoading && !mainDetail && !subDetail" class="ph-placeholder">会话读取失败</div>
           </div>
 
           <button
