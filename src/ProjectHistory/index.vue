@@ -607,12 +607,20 @@ const isNearBottom = () => {
   if (!el) return true
   return el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
 }
-const scrollToBottom = (smooth = false) => {
+const scrollToBottom = () => {
   const el = scrollEl.value
   if (el) {
-    // 用户点击「回到底部」平滑滚动；轮询自动跟随用瞬时，避免与流式刷新互相打架
-    if (smooth && el.scrollTo) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-    else el.scrollTop = el.scrollHeight
+    // 瞬时贴底：content-visibility 下平滑滚动会让视口逐段现渲整页、极卡；且 scrollHeight 含估算高度，
+    // 底部内容渲染后真实高度可能变化，故跨几帧重设直至稳定，确保真正到底。
+    el.scrollTop = el.scrollHeight
+    let tries = 0
+    const settle = () => {
+      const e = scrollEl.value
+      if (!e) return
+      e.scrollTop = e.scrollHeight
+      if (++tries < 3) requestAnimationFrame(settle)
+    }
+    requestAnimationFrame(settle)
   }
   showJumpBottom.value = false
   markSeen()
@@ -1731,7 +1739,7 @@ watch(() => props.project, load)
             class="ph-jump-bottom"
             :class="{ 'has-new': hasNew }"
             :title="hasNew ? jumpLabel + '，点击查看最新' : '滚动到底部'"
-            @click="scrollToBottom(true)"
+            @click="scrollToBottom()"
           >
             <svg class="ph-jump-arrow" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 6 5 5 5-5" /><path d="m7 13 5 5 5-5" /></svg>
             <span class="ph-jump-text">{{ jumpLabel }}</span>
