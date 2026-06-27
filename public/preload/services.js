@@ -7,6 +7,11 @@ function loadClaudeConfigHelpers () {
   return require('./claude-config.js')
 }
 
+// 惰性加载活跃会话检测（与 claude-config 同样按需 require，避免顶层副作用影响测试 loader）
+function loadActiveSessions () {
+  return require('./active-sessions.cjs')
+}
+
 // ===== Claude Code 项目启动器：设置存储 =====
 
 const SETTINGS_KEY = 'ccstart.settings'
@@ -972,6 +977,25 @@ function messageText (message) {
   return ''
 }
 
+// 部分系统消息的内容不在 content 而在元数据字段里（接口错误、上下文压缩等），
+// 提取成中文人话，让用户看得懂"系统做了什么"；返回空串表示该类型无需展示
+function systemSummary (d) {
+  const sub = d.subtype || ''
+  if (sub === 'api_error' && d.error) {
+    // formatted/message 通常已自带状态码，不再重复前缀
+    const msg = d.error.formatted || d.error.message || (d.error.status ? d.error.status + ' 请求失败' : '请求失败')
+    const retry = d.retryAttempt ? '，第 ' + d.retryAttempt + ' 次重试' : ''
+    return '接口错误：' + msg + retry
+  }
+  if (sub === 'compact_boundary') {
+    const m = d.compactMetadata || {}
+    const trig = m.trigger === 'manual' ? '手动触发' : (m.trigger === 'auto' ? '自动触发' : '')
+    const pre = m.preTokens ? '，压缩前约 ' + m.preTokens + ' tokens' : ''
+    return '上下文已压缩' + (trig ? '（' + trig + pre + '）' : pre)
+  }
+  return ''
+}
+
 // 从尾部文本提取标题:最后一条 ai-title 的 aiTitle
 function titleFromTail (tailText) {
   const lines = tailText.split(/\r?\n/)
@@ -1109,6 +1133,7 @@ function normalizeToolResult (content) {
     return content.map(b => {
       if (typeof b === 'string') return b
       if (b && b.type === 'text') return b.text || ''
+      if (b && b.type === 'tool_reference') return b.tool_name || ''
       return ''
     }).join('\n')
   }
@@ -1173,8 +1198,20 @@ function parseSession (content) {
     const sidechain = !!d.isSidechain
     const ts = d.timestamp || ''
     if (type === 'system') {
-      const text = typeof d.content === 'string' ? d.content : messageText(d.message)
-      if (text) { blocks.push({ kind: 'system', text, sidechain, ts }); meta.count++ }
+      // 优先用元数据生成的中文描述（接口错误 / 上下文压缩等）
+      let text = systemSummary(d)
+      if (!text) {
+        const raw = (typeof d.content === 'string' ? d.content : messageText(d.message) || '').trim()
+        // 剥掉 recap 尾巴、解开命令输出包裹、去标签后判断是否还有实际内容，
+        // 跳过空的 local-command 输出、纯遥测(turn_duration/stop_hook_summary 等)无内容消息，避免空白卡片
+        const meaningful = raw
+          .replace(/\s*\(disable recaps in \/config\)\s*$/i, '')
+          .replace(/<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>/g, '$2')
+          .replace(/<[^>]+>/g, '')
+          .trim()
+        if (meaningful) text = raw
+      }
+      if (text) { blocks.push({ kind: 'system', subtype: d.subtype || '', text, sidechain, ts }); meta.count++ }
       continue
     }
     const message = d.message
@@ -1415,6 +1452,11 @@ window.services = {
 
   // 读取会话文件状态 { mtime, size }（实时刷新变更检测）
   statSession,
+
+  // 列出当前项目下「正在运行的 claude 实例打开的 session」（精确活跃检测）
+  listActiveSessions (cwd) {
+    return loadActiveSessions().listActiveSessions(cwd)
+  },
 
   // 解析会话文本 / 格式化为 Markdown（导出复用）
   parseSession,

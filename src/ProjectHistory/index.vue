@@ -20,6 +20,23 @@ const sessionDetail = ref<{ blocks: any[]; meta: any } | null>(null)
 const selectedSession = ref<any>(null)
 const detailLoading = ref(false)
 
+// 窄屏（<900px）下左侧列表收为左上角弹窗
+const narrow = ref(false)
+const showList = ref(false)
+const suppressAnim = ref(false) // 宽窄切换瞬间禁用弹窗过渡，避免从侧栏态淡出造成"一闪"
+const applyNarrow = (suppress: boolean) => {
+  const n = window.innerWidth < 900
+  if (n === narrow.value) return
+  narrow.value = n
+  if (!n) showList.value = false
+  if (suppress) {
+    suppressAnim.value = true
+    requestAnimationFrame(() => requestAnimationFrame(() => { suppressAnim.value = false }))
+  }
+}
+const updateNarrow = () => applyNarrow(false) // 初始：元素首次创建不触发过渡，无需抑制
+const onResize = () => applyNarrow(true)       // 缩放：抑制宽窄切换的瞬间过渡
+
 // ---- 实时刷新：打开会话即轮询文件变更，增量重读并贴底跟随 ----
 const autoRefresh = ref(true) // 默认开启，可暂停
 const scrollEl = ref<HTMLElement | null>(null)
@@ -31,6 +48,13 @@ const POLL_MS = 800 // 检测间隔：仅一次 statSync，变化才重读，故
 const NEAR_BOTTOM_PX = 80
 let pollTimer: number | null = null
 let lastSig = '' // 上次已加载文件的签名（mtime:size），用于跳过无变化的轮询
+
+// 活跃会话：精确识别「正在运行的 claude 实例打开的 session」，只对其实时刷新
+const activeIds = ref<Set<string>>(new Set()) // 本项目当前活跃 session id 集合
+const currentLive = ref(false) // 当前打开的会话是否活跃（决定实时刷新 / 跟随 UI）
+const isSessionLive = (id: string) => activeIds.value.has(id)
+const LIVE_MS = 2500 // 活跃集刷新间隔
+let liveTimer: number | null = null
 
 // 提问导航：收集所有用户提问，支持上下跳转与列表跳转
 const blockEls: Record<number, HTMLElement> = {}
@@ -241,8 +265,13 @@ const load = () => {
   try {
     memories.value = window.services.listProjectMemories(p.dirName) || []
     sessions.value = window.services.listProjectSessions(p.dirName) || []
+    refreshActive()
   } catch (err: any) {
     error.value = err && err.message ? err.message : String(err)
+  }
+  // 窄屏进入且尚未选择 → 默认弹出列表（延一帧以触发进入动画）
+  if (narrow.value && (memories.value.length || sessions.value.length)) {
+    requestAnimationFrame(() => { if (!selected.value) showList.value = true })
   }
 }
 
@@ -340,6 +369,143 @@ const lineDiff = (oldStr: string, newStr: string) => {
   while (j < n) { out.push({ t: 'add', text: b[j] }); j++ }
   return out
 }
+
+// ---- 工具调用的专用渲染 ----
+// 识别需要定制展示的工具类型，其余回退到通用渲染
+const toolKind = (b: any) => {
+  const n = (b && b.name) || ''
+  if (n === 'Skill') return 'skill'
+  if (n === 'ToolSearch') return 'toolsearch'
+  if (n === 'AskUserQuestion') return 'ask'
+  if (n === 'Write') return 'write'
+  if (n === 'Read') return 'read'
+  if (n === 'Grep') return 'grep'
+  if (/codegraph/i.test(n)) return 'codegraph'
+  return ''
+}
+// Read 的读取行范围标注
+const readRange = (b: any) => {
+  const inp = b.input || {}
+  const off = inp.offset; const lim = inp.limit
+  if (off && lim) return `第 ${off}–${off + lim - 1} 行`
+  if (off) return `从第 ${off} 行起`
+  if (lim) return `前 ${lim} 行`
+  return ''
+}
+// 去掉 cat -n 行号前缀（用于 .md 阅读模式渲染）
+const stripLineNos = (text: string) => (text || '').replace(/^[ \t]*\d+\t/gm, '')
+
+// ---- Grep 专用解析 ----
+const grepMode = (b: any) => (b.input && b.input.output_mode) || 'files_with_matches'
+// 检索范围/选项 → 标签胶囊
+const grepScope = (b: any) => {
+  const i = b.input || {}
+  const chips: { k: string; v: string }[] = []
+  if (i.path) chips.push({ k: '路径', v: i.path })
+  if (i.glob) chips.push({ k: 'glob', v: i.glob })
+  if (i.type) chips.push({ k: '类型', v: i.type })
+  const flags: string[] = []
+  if (i['-i']) flags.push('忽略大小写')
+  if (i['-C']) flags.push('上下文 ' + i['-C'] + ' 行')
+  else { if (i['-B']) flags.push('前 ' + i['-B'] + ' 行'); if (i['-A']) flags.push('后 ' + i['-A'] + ' 行') }
+  if (i.head_limit) flags.push('限 ' + i.head_limit + ' 条')
+  if (flags.length) chips.push({ k: '选项', v: flags.join('、') })
+  return chips
+}
+// files_with_matches 结果 → { head, files }
+const grepFiles = (b: any) => {
+  const lines = ((b.result && b.result.text) || '').split('\n').map((s: string) => s.trim()).filter(Boolean)
+  let head = ''
+  if (lines.length && /^Found\s+\d+\s+files?/i.test(lines[0])) head = lines.shift()
+  return { head, files: lines }
+}
+// content 结果 → 逐行分类：hit(命中) / ctx(上下文) / sep(分隔) / raw(带路径前缀，原样)
+const grepContentLines = (b: any) => {
+  return ((b.result && b.result.text) || '').split('\n').map((line: string) => {
+    if (line === '--') return { t: 'sep', no: '', text: '' }
+    const m = line.match(/^(\d+)([:-])(.*)$/)
+    if (m) return { t: m[2] === ':' ? 'hit' : 'ctx', no: m[1], text: m[3] }
+    return { t: 'raw', no: '', text: line }
+  })
+}
+// Skill 直接在折叠行展示结果，无需展开
+const toolExpandable = (b: any) => toolKind(b) !== 'skill'
+// codegraph / ToolSearch 的查询语句
+const toolQuery = (b: any) => {
+  const inp = b.input || {}
+  return inp.query || inp.question || toolSummary(inp) || ''
+}
+// 折叠行文案：按工具类型选取最有信息量的一行
+const toolHeadText = (b: any) => {
+  switch (toolKind(b)) {
+    case 'skill': return (b.result && b.result.text) || (b.input && b.input.skill) || toolDesc(b)
+    case 'toolsearch':
+    case 'codegraph': return toolQuery(b) || toolDesc(b)
+    case 'ask': return askSummary(b)
+    case 'grep': return (b.input && b.input.pattern) || toolDesc(b)
+    default: return toolDesc(b)
+  }
+}
+// ToolSearch 结果解析为工具列表：优先 <function>{json}</function>，回退纯工具名列表
+const toolSearchItems = (b: any) => {
+  const txt = (b.result && b.result.text) || ''
+  const items: { name: string; desc: string }[] = []
+  const re = /<function>(\{[\s\S]*?\})<\/function>/g
+  let m
+  while ((m = re.exec(txt))) {
+    try { const o = JSON.parse(m[1]); items.push({ name: o.name || '', desc: o.description || '' }) } catch (_) { /* 跳过坏块 */ }
+  }
+  if (items.length) return items
+  return txt.split('\n').map((s) => s.trim()).filter(Boolean).map((name) => ({ name, desc: '' }))
+}
+// AskUserQuestion 结果文本里解析「问题=答案」对
+const askAnswerMap = (b: any) => {
+  const txt = (b.result && b.result.text) || ''
+  const map: Record<string, string> = {}
+  const re = /"([^"]*)"\s*=\s*"([^"]*)"/g
+  let m
+  while ((m = re.exec(txt))) { map[m[1]] = m[2] }
+  return map
+}
+const askSummary = (b: any) => {
+  const vals = Object.values(askAnswerMap(b))
+  return vals.length ? vals.join('；') : ((b.result && b.result.text) || toolDesc(b))
+}
+// 某问题的某选项是否被选中（按标签匹配，兼容多选）
+const askIsChosen = (b: any, q: any, opt: any) => {
+  const ans = askAnswerMap(b)[(q && q.question) || ''] || ''
+  return !!opt && !!opt.label && ans.includes(opt.label)
+}
+const isMarkdownPath = (p: any) => typeof p === 'string' && /\.(md|markdown)$/i.test(p)
+
+// ---- 系统消息 ----
+const SYS_LABEL: Record<string, string> = {
+  away_summary: '会话回顾',
+  local_command: '命令',
+  compact_boundary: '上下文压缩',
+  api_error: '接口错误'
+}
+// 头部已有「系统」标签，未知子类型不再重复
+const sysLabel = (b: any) => SYS_LABEL[b.subtype] || ''
+// 无可展示文本则整卡不渲染，杜绝空白卡
+const sysVisible = (b: any) => !!sysText(b)
+// 清洗系统文本：去 recap 尾巴、解开 local-command 输出、斜杠命令回显归一为 /cmd
+const sysText = (b: any) => {
+  let t = (b.text || '').trim()
+  t = t.replace(/\s*\(disable recaps in \/config\)\s*$/i, '').trim()
+  let m = t.match(/^<local-command-(stdout|stderr)>([\s\S]*)<\/local-command-\1>$/)
+  if (m) return (m[2] || '').trim()
+  m = t.match(/<command-name>([\s\S]*?)<\/command-name>/)
+  if (m) {
+    const args = ((t.match(/<command-args>([\s\S]*?)<\/command-args>/) || [])[1] || '').trim()
+    return (m[1].trim() + (args ? ' ' + args : '')).trim()
+  }
+  return t
+}
+// Markdown 结果的「阅读模式 / 源码」切换状态，默认阅读模式
+const srcKeys = reactive<Record<string, boolean>>({})
+const isSrc = (key: string) => !!srcKeys[key]
+const setSrc = (key: string, v: boolean) => { srcKeys[key] = v }
 
 // ---- 选择与详情加载 ----
 const isNearBottom = () => {
@@ -450,8 +616,39 @@ const toggleAutoRefresh = () => {
   autoRefresh.value = !autoRefresh.value
   if (autoRefresh.value) { startPoll(); refreshSession() } else stopPoll()
 }
+// 仅重载会话列表（不触碰当前选中/详情/轮询），供新会话出现时增量刷新
+const reloadSessions = () => {
+  const p = props.project
+  if (!p || !p.dirName) return
+  try { sessions.value = window.services.listProjectSessions(p.dirName) || [] } catch (_) { /* 失败则保持原列表 */ }
+}
+
+// 刷新本项目活跃 session 集合；若当前打开会话的存活态翻转则联动启停实时刷新
+const refreshActive = () => {
+  try {
+    const list = window.services.listActiveSessions(props.project?.cwd) || []
+    activeIds.value = new Set(list.map((a: any) => a.sessionId))
+  } catch (_) { activeIds.value = new Set() }
+  // 启动新会话时活跃集会先于列表更新：出现列表中尚无的活跃 session → 重载列表使其自动出现
+  const ids = new Set(sessions.value.map((s: any) => s.sessionId))
+  if ([...activeIds.value].some((id) => !ids.has(id))) reloadSessions()
+  const s = selectedSession.value
+  if (s && selected.value && selected.value.type === 'session') {
+    const live = isSessionLive(s.sessionId)
+    if (live !== currentLive.value) {
+      // 在线↔离线切换：默认联动实时刷新（上线→开，下线→暂停）；切换间用户的手动开关仍被尊重
+      currentLive.value = live
+      autoRefresh.value = live
+      if (live) { startPoll(); refreshSession() } else stopPoll()
+    }
+  }
+}
+const stopLiveTimer = () => {
+  if (liveTimer !== null) { clearInterval(liveTimer); liveTimer = null }
+}
 
 const selectMemory = (m: any) => {
+  showList.value = false
   stopPoll()
   mdCache.clear()
   selected.value = { type: 'memory', id: m.fileName }
@@ -461,6 +658,7 @@ const selectMemory = (m: any) => {
 }
 
 const selectSession = (s: any) => {
+  showList.value = false
   selected.value = { type: 'session', id: s.sessionId }
   memoryDetail.value = null
   selectedSession.value = s
@@ -484,6 +682,8 @@ const selectSession = (s: any) => {
       error.value = err && err.message ? err.message : String(err)
     } finally {
       detailLoading.value = false
+      currentLive.value = isSessionLive(s.sessionId)
+      autoRefresh.value = currentLive.value // 在线会话默认实时，离线（历史）会话默认暂停
       startPoll()
       // 打开会话停在顶部，按当前位置决定是否显示「滚动到底部」按钮
       nextTick(() => {
@@ -521,6 +721,13 @@ const gotoOriginSession = () => {
 const showToast = (msg: string) => {
   toast.value = msg
   setTimeout(() => { if (toast.value === msg) toast.value = '' }, 2000)
+}
+// 复制当前会话的 session ID（用于 claude --resume 等）
+const copyId = () => {
+  const id = selectedSession.value && selectedSession.value.sessionId
+  if (!id) return
+  try { if (window.utools && window.utools.copyText) window.utools.copyText(id) } catch (_) { /* 忽略 */ }
+  showToast('已复制 session ID')
 }
 
 const openTerminal = () => {
@@ -595,6 +802,24 @@ const doExportHtml = async () => {
   const inner = chat ? chat.outerHTML : ''
   forceExpand.value = false
   const title = String((selectedSession.value.title || selectedSession.value.sessionId) || '会话记录')
+  // 顶部辅助信息：项目 / 大小 / 模型 / 分支 / 版本 / 消息数
+  const meta = (sessionDetail.value && sessionDetail.value.meta) || {}
+  const sess = selectedSession.value || {}
+  let model = ''
+  for (const b of (sessionDetail.value && sessionDetail.value.blocks) || []) { if (b.model) model = b.model }
+  const metaItems: [string, string][] = [
+    ['项目', (props.project && props.project.displayName) || ''],
+    ['路径', (props.project && (props.project.cwd || props.project.dirName)) || ''],
+    ['大小', sess.size ? formatSize(sess.size) : ''],
+    ['模型', model],
+    ['分支', meta.gitBranch || ''],
+    ['版本', meta.version ? 'v' + meta.version : ''],
+    ['消息数', meta.count ? meta.count + ' 条' : '']
+  ]
+  const metaHtml = metaItems
+    .filter(([, v]) => v)
+    .map(([k, v]) => `<div class="ph-export-meta-item"><span class="ph-export-meta-k">${escapeHtml(k)}</span><span class="ph-export-meta-v">${escapeHtml(String(v))}</span></div>`)
+    .join('')
   const html = `<!DOCTYPE html>
 <html lang="zh">
 <head>
@@ -604,14 +829,28 @@ const doExportHtml = async () => {
 <style>
 ${collectCss()}
 body { margin: 0; background: var(--card-bg); color: var(--text-primary); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; }
-.ph-export { max-width: 920px; margin: 0 auto; padding: 24px 20px; }
-.ph-export-title { font-size: 18px; margin: 0 0 18px; }
+.ph-export { max-width: 920px; margin: 0 auto; padding: 28px 22px; }
+.ph-export-head { margin: 0 0 24px; padding: 0 0 18px; border-bottom: 1px solid var(--border-color); }
+.ph-export-title {
+  font-size: 21px; font-weight: 700; line-height: 1.35;
+  margin: 0 0 14px; color: var(--text-primary); word-break: break-word;
+}
+.ph-export-meta {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 9px 26px;
+}
+.ph-export-meta-item { display: flex; align-items: baseline; gap: 10px; font-size: 13px; min-width: 0; }
+.ph-export-meta-k { flex: 0 0 auto; min-width: 42px; font-weight: 600; color: var(--text-secondary); }
+.ph-export-meta-v { min-width: 0; color: var(--text-primary); word-break: break-all; }
 .ph-export .tool-caret, .ph-export .ph-chip-eye { display: none; }
 </style>
 </head>
 <body>
 <div class="ph-export">
+<header class="ph-export-head">
 <h1 class="ph-export-title">${escapeHtml(title)}</h1>
+${metaHtml ? `<div class="ph-export-meta">${metaHtml}</div>` : ''}
+</header>
 ${inner}
 </div>
 </body>
@@ -639,10 +878,17 @@ const onKeydown = (e: KeyboardEvent) => {
 }
 
 onMounted(() => {
+  updateNarrow()
   load()
+  liveTimer = window.setInterval(refreshActive, LIVE_MS)
   window.addEventListener('keydown', onKeydown)
+  window.addEventListener('resize', onResize)
 })
-onUnmounted(() => { window.removeEventListener('keydown', onKeydown); stopPoll() })
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('resize', onResize)
+  stopPoll(); stopLiveTimer()
+})
 watch(() => props.project, load)
 </script>
 
@@ -653,6 +899,12 @@ watch(() => props.project, load)
       <button class="ph-back" title="返回 (Esc)" @click="emit('back')">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6" /></svg>
+      </button>
+      <button v-if="narrow" class="ph-list-toggle" :class="{ on: showList }" :title="showList ? '收起列表' : '记忆与会话列表'" @click="showList = !showList">
+        <svg class="ph-lt-ico ph-lt-menu" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
+        <svg class="ph-lt-ico ph-lt-close" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="14" height="14" rx="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
       </button>
       <div class="ph-proj">
         <div class="ph-proj-name">
@@ -687,9 +939,11 @@ watch(() => props.project, load)
     <div v-if="error" class="ph-error">{{ error }}</div>
 
     <!-- 下方：左右布局 -->
-    <div class="ph-main">
-      <!-- 左侧列表 -->
-      <aside class="ph-left">
+    <div class="ph-main" :class="{ 'ph-main--narrow': narrow }">
+      <!-- 窄屏：列表弹窗的背景遮罩 -->
+      <div v-if="narrow && showList" class="ph-list-backdrop" @click="showList = false"></div>
+      <!-- 左侧列表（窄屏下为左上角弹窗） -->
+      <aside class="ph-left" :class="{ 'ph-left--pop': narrow, open: showList, 'ph-no-anim': suppressAnim }">
         <div v-if="filteredMemories.length" class="ph-group">
           <div class="ph-group-title">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg>
@@ -723,6 +977,7 @@ watch(() => props.project, load)
           >
             <div class="ph-item-title">{{ s.title || '(无标题会话)' }}</div>
             <div class="ph-item-sub">
+              <span v-if="isSessionLive(s.sessionId)" class="ph-live-tag" title="正在运行中">● 进行中</span>
               <span>{{ formatTime(s.mtime) }}</span>
               <span v-if="s.size" class="ph-size">{{ formatSize(s.size) }}</span>
             </div>
@@ -736,7 +991,13 @@ watch(() => props.project, load)
 
       <!-- 右侧详情 -->
       <section class="ph-right">
-        <div v-if="!selected" class="ph-placeholder">从左侧选择一条记忆或历史会话查看</div>
+        <div v-if="!selected" class="ph-empty-detail">
+          <svg viewBox="0 0 24 24" width="46" height="46" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+            <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+          </svg>
+          <div class="ph-empty-text">请选择一条记忆或历史会话</div>
+        </div>
 
         <!-- 记忆详情 -->
         <template v-else-if="selected.type === 'memory'">
@@ -765,12 +1026,16 @@ watch(() => props.project, load)
         <template v-else>
           <div class="ph-detail-head">
             <div class="ph-detail-titlewrap">
-              <div class="ph-detail-title">{{ selectedSession && (selectedSession.title || selectedSession.sessionId) }}</div>
+              <div class="ph-detail-title">
+                <span class="ph-detail-title-text">{{ selectedSession && (selectedSession.title || selectedSession.sessionId) }}</span>
+                <span v-if="currentLive" class="ph-online-chip" title="该会话当前在终端中打开并在线">● 在线</span>
+              </div>
               <div v-if="sessionDetail && sessionDetail.meta" class="ph-detail-meta">
                 <span v-if="sessionDetail.meta.gitBranch">⎇ {{ sessionDetail.meta.gitBranch }}</span>
                 <span v-if="sessionDetail.meta.version">v{{ sessionDetail.meta.version }}</span>
                 <span v-if="sessionDetail.meta.count">{{ sessionDetail.meta.count }} 条</span>
                 <span v-if="selectedSession && selectedSession.size">{{ formatSize(selectedSession.size) }}</span>
+                <span v-if="selectedSession" class="ph-detail-id" title="点击复制 session ID" @click="copyId">{{ selectedSession.sessionId }}</span>
               </div>
             </div>
             <div class="ph-actions">
@@ -795,8 +1060,14 @@ watch(() => props.project, load)
                 </button>
                 <div v-if="showExport" class="ph-export-backdrop" @click="showExport = false"></div>
                 <div v-if="showExport" class="ph-export-menu">
-                  <button class="ph-export-item" @click="doExportMd"><span class="ph-export-fmt">MD</span> 导出为 Markdown</button>
-                  <button class="ph-export-item" @click="doExportHtml"><span class="ph-export-fmt">HTML</span> 导出为 HTML</button>
+                  <button class="ph-export-item" @click="doExportMd">
+                    <span class="ph-export-ico"><svg viewBox="0 0 208 128" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="14" stroke-linejoin="round" d="M14 7h180a7 7 0 0 1 7 7v100a7 7 0 0 1-7 7H14a7 7 0 0 1-7-7V14a7 7 0 0 1 7-7z" /><path fill="currentColor" d="M30 98V32h19l20 24 20-24h19v66H89V60L69 84 49 60v38zm123 0-29-32h18V32h22v34h18z" /></svg></span>
+                    导出为 Markdown
+                  </button>
+                  <button class="ph-export-item" @click="doExportHtml">
+                    <span class="ph-export-ico"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M1.5 0h21l-1.91 21.563L11.977 24l-8.564-2.438L1.5 0zm7.031 9.75l-.232-2.718 10.059.003.23-2.622L5.412 4.41l.698 8.01h9.126l-.326 3.426-2.91.804-2.955-.81-.188-2.11H6.248l.33 4.171L12 19.351l5.379-1.443.744-8.157H8.531z" /></svg></span>
+                    导出为 HTML
+                  </button>
                 </div>
               </div>
             </div>
@@ -833,7 +1104,7 @@ watch(() => props.project, load)
             </div>
 
             <div v-if="showQuestions" class="ph-qbackdrop" @click="showQuestions = false"></div>
-            <div v-if="showQuestions" class="ph-qpanel">
+            <div class="ph-qpanel" :class="{ open: showQuestions }">
               <div class="ph-qpanel-title">我的提问 · {{ userQuestions.length }}</div>
               <div class="ph-qpanel-list">
                 <div
@@ -914,7 +1185,7 @@ watch(() => props.project, load)
 
                       <!-- 其它类型：带类型标签的小卡 -->
                       <div
-                        v-else-if="it.block.kind !== 'assistant' && visibleKinds[it.block.kind]"
+                        v-else-if="it.block.kind !== 'assistant' && visibleKinds[it.block.kind] && (it.block.kind !== 'system' || sysVisible(it.block))"
                         :ref="(el) => setBlockRef(el, it.index)"
                         class="sub"
                         :class="[kindMeta(it.block.kind).cls, {
@@ -924,15 +1195,16 @@ watch(() => props.project, load)
                       >
                         <div
                           class="sub-head"
-                          :class="{ 'tool-head': it.block.kind === 'tool_use' || it.block.kind === 'thinking' }"
-                          @click="(it.block.kind === 'tool_use' || it.block.kind === 'thinking') ? toggleHead(it) : null"
+                          :class="{ 'tool-head': (it.block.kind === 'tool_use' && toolExpandable(it.block)) || it.block.kind === 'thinking' }"
+                          @click="((it.block.kind === 'tool_use' && toolExpandable(it.block)) || it.block.kind === 'thinking') ? toggleHead(it) : null"
                         >
                           <span class="sub-tag">{{ kindMeta(it.block.kind).label }}</span>
                           <span v-if="it.block.kind === 'tool_use'" class="blk-toolname">{{ it.block.name }}</span>
-                          <span v-if="it.block.kind === 'tool_use'" class="tool-line-text">{{ toolDesc(it.block) }}</span>
+                          <span v-if="it.block.kind === 'tool_use'" class="tool-line-text">{{ toolHeadText(it.block) }}</span>
                           <span v-else-if="it.block.kind === 'thinking'" class="tool-line-text">{{ thinkPreview(it.block) }}</span>
+                          <span v-else-if="it.block.kind === 'system' && sysLabel(it.block)" class="tool-line-text">· {{ sysLabel(it.block) }}</span>
                           <span v-if="it.block.sidechain" class="blk-side">子任务</span>
-                          <svg v-if="it.block.kind === 'tool_use' || it.block.kind === 'thinking'" class="tool-caret" :class="{ open: headOpen(it) }" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></svg>
+                          <svg v-if="(it.block.kind === 'tool_use' && toolExpandable(it.block)) || it.block.kind === 'thinking'" class="tool-caret" :class="{ open: headOpen(it) }" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></svg>
                         </div>
 
                         <!-- 思考：默认折叠（头部一行预览），展开看全文 -->
@@ -940,36 +1212,195 @@ watch(() => props.project, load)
                           <pre v-if="isOpen('t' + it.index)" class="blk-pre think-pre">{{ it.block.text }}</pre>
                         </template>
 
-                        <!-- 工具调用：展开后依次显示 描述 / 命令 / 结果 -->
+                        <!-- 工具调用：按工具类型定制展开内容（Skill 已在折叠行直出结果，无展开） -->
                         <template v-else-if="it.block.kind === 'tool_use'">
-                          <div v-if="isOpen('tu' + it.index)" class="tool-detail">
-                            <div v-if="it.block.input && it.block.input.description" class="tool-sec">
-                              <span class="tool-sec-label">描述</span>
-                              <div class="tool-sec-text">{{ it.block.input.description }}</div>
-                            </div>
-                            <div v-if="hasDiff(it.block)" class="tool-sec">
-                              <span class="tool-sec-label">变更</span>
-                              <div class="diff">
-                                <div
-                                  v-for="(ln, k) in lineDiff(it.block.input.old_string, it.block.input.new_string)"
-                                  :key="k"
-                                  class="diff-line"
-                                  :class="'diff-' + ln.t"
-                                ><span class="diff-sign">{{ ln.t === 'add' ? '+' : (ln.t === 'del' ? '−' : '') }}</span><span class="diff-text">{{ ln.text }}</span></div>
+                          <div v-if="toolExpandable(it.block) && isOpen('tu' + it.index)" class="tool-detail">
+
+                            <!-- ToolSearch：解析为查询到的工具列表 -->
+                            <template v-if="toolKind(it.block) === 'toolsearch'">
+                              <div class="tool-sec">
+                                <span class="tool-sec-label">查询</span>
+                                <div class="tool-sec-text">{{ toolQuery(it.block) }}</div>
                               </div>
-                            </div>
-                            <div v-else-if="toolCommand(it.block)" class="tool-sec">
-                              <span class="tool-sec-label">命令</span>
-                              <pre class="blk-pre">{{ toolCommand(it.block) }}</pre>
-                            </div>
-                            <div v-else-if="it.block.input" class="tool-sec">
-                              <span class="tool-sec-label">参数</span>
-                              <pre class="blk-pre">{{ stringifyInput(it.block.input) }}</pre>
-                            </div>
-                            <div v-if="it.block.result" class="tool-sec">
-                              <span class="tool-sec-label">{{ it.block.result.isError ? '结果（错误）' : '结果' }}</span>
-                              <pre class="blk-pre" :class="{ 'pre-err': it.block.result.isError }">{{ it.block.result.text }}</pre>
-                            </div>
+                              <div class="tool-sec">
+                                <span class="tool-sec-label">匹配工具（{{ toolSearchItems(it.block).length }}）</span>
+                                <div class="ts-list">
+                                  <div v-for="(ts, k) in toolSearchItems(it.block)" :key="k" class="ts-item">
+                                    <code class="ts-name">{{ ts.name }}</code>
+                                    <span v-if="ts.desc" class="ts-desc">{{ ts.desc }}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </template>
+
+                            <!-- codegraph：查询 + Markdown 结果（阅读模式 / 源码 切换） -->
+                            <template v-else-if="toolKind(it.block) === 'codegraph'">
+                              <div class="tool-sec">
+                                <span class="tool-sec-label">查询</span>
+                                <div class="tool-sec-text">{{ toolQuery(it.block) }}</div>
+                              </div>
+                              <div v-if="it.block.result" class="tool-sec">
+                                <div class="md-bar">
+                                  <span class="tool-sec-label">{{ it.block.result.isError ? '结果（错误）' : '结果' }}</span>
+                                  <div class="md-toggle">
+                                    <span class="md-tab" :class="{ active: !isSrc('s' + it.index) }" @click="setSrc('s' + it.index, false)">阅读模式</span>
+                                    <span class="md-tab" :class="{ active: isSrc('s' + it.index) }" @click="setSrc('s' + it.index, true)">源码</span>
+                                  </div>
+                                </div>
+                                <pre v-if="isSrc('s' + it.index)" class="blk-pre" :class="{ 'pre-err': it.block.result.isError }">{{ it.block.result.text }}</pre>
+                                <div v-else class="ph-md md-render" v-html="renderMarkdown(it.block.result.text)"></div>
+                              </div>
+                            </template>
+
+                            <!-- AskUserQuestion：渲染成问答卡，与工具内容明显区分 -->
+                            <template v-else-if="toolKind(it.block) === 'ask'">
+                              <div class="ask-detail">
+                                <div v-for="(q, qi) in (it.block.input && it.block.input.questions) || []" :key="qi" class="ask-q">
+                                  <div class="ask-q-head">
+                                    <span class="ask-q-badge">问</span>
+                                    <span v-if="q.header" class="ask-q-tag">{{ q.header }}</span>
+                                  </div>
+                                  <div class="ask-q-text">{{ q.question }}</div>
+                                  <div class="ask-opts">
+                                    <div
+                                      v-for="(opt, oi) in q.options"
+                                      :key="oi"
+                                      class="ask-opt"
+                                      :class="{ chosen: askIsChosen(it.block, q, opt) }"
+                                    >
+                                      <span class="ask-opt-mark">{{ askIsChosen(it.block, q, opt) ? '✓' : '' }}</span>
+                                      <div class="ask-opt-body">
+                                        <div class="ask-opt-label-row">
+                                          <span class="ask-opt-label">{{ opt.label }}</span>
+                                          <span v-if="askIsChosen(it.block, q, opt)" class="ask-opt-badge">已选</span>
+                                        </div>
+                                        <div v-if="opt.description" class="ask-opt-desc">{{ opt.description }}</div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </template>
+
+                            <!-- Write：文件路径 + 内容（.md 支持阅读模式 / 源码 切换） -->
+                            <template v-else-if="toolKind(it.block) === 'write'">
+                              <div class="tool-sec">
+                                <span class="tool-sec-label">文件</span>
+                                <div class="tool-sec-text wr-path">{{ it.block.input && it.block.input.file_path }}</div>
+                              </div>
+                              <div class="tool-sec">
+                                <div class="md-bar">
+                                  <span class="tool-sec-label">内容</span>
+                                  <div v-if="isMarkdownPath(it.block.input && it.block.input.file_path)" class="md-toggle">
+                                    <span class="md-tab" :class="{ active: !isSrc('s' + it.index) }" @click="setSrc('s' + it.index, false)">阅读模式</span>
+                                    <span class="md-tab" :class="{ active: isSrc('s' + it.index) }" @click="setSrc('s' + it.index, true)">源码</span>
+                                  </div>
+                                </div>
+                                <div
+                                  v-if="isMarkdownPath(it.block.input && it.block.input.file_path) && !isSrc('s' + it.index)"
+                                  class="ph-md md-render"
+                                  v-html="renderMarkdown((it.block.input && it.block.input.content) || '')"
+                                ></div>
+                                <pre v-else class="blk-pre">{{ (it.block.input && it.block.input.content) || '' }}</pre>
+                              </div>
+                              <div v-if="it.block.result" class="tool-sec">
+                                <span class="tool-sec-label">{{ it.block.result.isError ? '结果（错误）' : '结果' }}</span>
+                                <div class="tool-sec-text wr-res">{{ it.block.result.text }}</div>
+                              </div>
+                            </template>
+
+                            <!-- Read：文件路径(+行范围) + 内容（.md 支持阅读模式 / 源码 切换） -->
+                            <template v-else-if="toolKind(it.block) === 'read'">
+                              <div class="tool-sec">
+                                <span class="tool-sec-label">文件</span>
+                                <div class="tool-sec-text wr-path">
+                                  <span>{{ it.block.input && it.block.input.file_path }}</span>
+                                  <span v-if="readRange(it.block)" class="read-range">{{ readRange(it.block) }}</span>
+                                </div>
+                              </div>
+                              <div v-if="it.block.result" class="tool-sec">
+                                <div class="md-bar">
+                                  <span class="tool-sec-label">{{ it.block.result.isError ? '结果（错误）' : '内容' }}</span>
+                                  <div v-if="isMarkdownPath(it.block.input && it.block.input.file_path) && !it.block.result.isError" class="md-toggle">
+                                    <span class="md-tab" :class="{ active: !isSrc('s' + it.index) }" @click="setSrc('s' + it.index, false)">阅读模式</span>
+                                    <span class="md-tab" :class="{ active: isSrc('s' + it.index) }" @click="setSrc('s' + it.index, true)">源码</span>
+                                  </div>
+                                </div>
+                                <div
+                                  v-if="isMarkdownPath(it.block.input && it.block.input.file_path) && !it.block.result.isError && !isSrc('s' + it.index)"
+                                  class="ph-md md-render"
+                                  v-html="renderMarkdown(stripLineNos(it.block.result.text))"
+                                ></div>
+                                <pre v-else class="blk-pre" :class="{ 'pre-err': it.block.result.isError }">{{ it.block.result.text }}</pre>
+                              </div>
+                            </template>
+
+                            <!-- Grep：匹配模式 + 检索范围 + 结果（文件列表 / 命中高亮内容） -->
+                            <template v-else-if="toolKind(it.block) === 'grep'">
+                              <div class="tool-sec">
+                                <span class="tool-sec-label">匹配模式</span>
+                                <div class="grep-pattern">{{ it.block.input && it.block.input.pattern }}</div>
+                                <div v-if="grepScope(it.block).length" class="grep-scope">
+                                  <span v-for="(c, k) in grepScope(it.block)" :key="k" class="grep-chip"><span class="grep-chip-k">{{ c.k }}</span>{{ c.v }}</span>
+                                </div>
+                              </div>
+                              <div v-if="it.block.result" class="tool-sec">
+                                <!-- files_with_matches：文件列表 -->
+                                <template v-if="grepMode(it.block) === 'files_with_matches' && !it.block.result.isError">
+                                  <span class="tool-sec-label">{{ grepFiles(it.block).head || ('匹配文件（' + grepFiles(it.block).files.length + '）') }}</span>
+                                  <div class="ts-list">
+                                    <div v-for="(fp, k) in grepFiles(it.block).files" :key="k" class="grep-file"><code>{{ fp }}</code></div>
+                                  </div>
+                                </template>
+                                <!-- content：命中行高亮 -->
+                                <template v-else-if="grepMode(it.block) === 'content' && !it.block.result.isError">
+                                  <span class="tool-sec-label">匹配内容</span>
+                                  <div class="grep-lines">
+                                    <div v-for="(ln, k) in grepContentLines(it.block)" :key="k" class="grep-line" :class="'grep-' + ln.t">
+                                      <span v-if="ln.t === 'hit' || ln.t === 'ctx'" class="grep-no">{{ ln.no }}</span>
+                                      <span class="grep-text">{{ ln.t === 'sep' ? '⋯⋯' : ln.text }}</span>
+                                    </div>
+                                  </div>
+                                </template>
+                                <!-- count / 错误 / 兜底 -->
+                                <template v-else>
+                                  <span class="tool-sec-label">{{ it.block.result.isError ? '结果（错误）' : '结果' }}</span>
+                                  <pre class="blk-pre" :class="{ 'pre-err': it.block.result.isError }">{{ it.block.result.text }}</pre>
+                                </template>
+                              </div>
+                            </template>
+
+                            <!-- 其它工具：保持原有 描述 / 变更 / 命令 / 参数 / 结果 -->
+                            <template v-else>
+                              <div v-if="it.block.input && it.block.input.description" class="tool-sec">
+                                <span class="tool-sec-label">描述</span>
+                                <div class="tool-sec-text">{{ it.block.input.description }}</div>
+                              </div>
+                              <div v-if="hasDiff(it.block)" class="tool-sec">
+                                <span class="tool-sec-label">变更</span>
+                                <div class="diff">
+                                  <div
+                                    v-for="(ln, k) in lineDiff(it.block.input.old_string, it.block.input.new_string)"
+                                    :key="k"
+                                    class="diff-line"
+                                    :class="'diff-' + ln.t"
+                                  ><span class="diff-sign">{{ ln.t === 'add' ? '+' : (ln.t === 'del' ? '−' : '') }}</span><span class="diff-text">{{ ln.text }}</span></div>
+                                </div>
+                              </div>
+                              <div v-else-if="toolCommand(it.block)" class="tool-sec">
+                                <span class="tool-sec-label">命令</span>
+                                <pre class="blk-pre">{{ toolCommand(it.block) }}</pre>
+                              </div>
+                              <div v-else-if="it.block.input" class="tool-sec">
+                                <span class="tool-sec-label">参数</span>
+                                <pre class="blk-pre">{{ stringifyInput(it.block.input) }}</pre>
+                              </div>
+                              <div v-if="it.block.result" class="tool-sec">
+                                <span class="tool-sec-label">{{ it.block.result.isError ? '结果（错误）' : '结果' }}</span>
+                                <pre class="blk-pre" :class="{ 'pre-err': it.block.result.isError }">{{ it.block.result.text }}</pre>
+                              </div>
+                            </template>
+
                           </div>
                         </template>
 
@@ -988,8 +1419,9 @@ watch(() => props.project, load)
                           </template>
                         </div>
 
-                        <!-- 系统 -->
-                        <div v-else class="blk-sys-text">{{ it.block.text }}</div>
+                        <!-- 系统：按子类型呈现（会话回顾 Markdown / 命令输出代码块） -->
+                        <!-- 系统：极简朴素，一行文本 -->
+                        <div v-else class="blk-sys-text">{{ sysText(it.block) }}</div>
                       </div>
                     </template>
                     </div>
@@ -1053,6 +1485,21 @@ watch(() => props.project, load)
   transition: all 0.15s ease;
 }
 .ph-back:hover { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+.ph-list-toggle {
+  flex: 0 0 auto;
+  width: 34px; height: 34px;
+  display: grid; place-items: center;
+  border: 1px solid var(--border-color); border-radius: 8px;
+  background: var(--bg-hover); color: var(--text-secondary);
+  cursor: pointer; transition: all 0.15s ease;
+}
+.ph-list-toggle:hover, .ph-list-toggle.on { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+.ph-list-toggle:active { transform: scale(0.92); }
+/* ☰ ↔ ✕ 交叉淡入淡出（两个图标叠放于同一网格单元） */
+.ph-lt-ico { grid-area: 1 / 1; transition: opacity 0.18s ease, transform 0.18s ease; }
+.ph-lt-close { opacity: 0; transform: scale(0.6); }
+.ph-list-toggle.on .ph-lt-menu { opacity: 0; transform: scale(0.6); }
+.ph-list-toggle.on .ph-lt-close { opacity: 1; transform: none; }
 .ph-proj { flex: 1 1 auto; min-width: 0; }
 .ph-proj-name { display: flex; align-items: center; min-width: 0; }
 .ph-proj-name-text { min-width: 0; font-weight: 600; font-size: 14px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1061,14 +1508,14 @@ watch(() => props.project, load)
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 11px;
+  gap: 4px;
+  padding: 3px 8px;
   border: 1px solid #3a3f4b;
   border-radius: 6px;
   background: #1e2128;
   color: #4ec9b0;
   font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-size: 11px;
   cursor: pointer;
   transition: background 0.15s ease;
 }
@@ -1078,16 +1525,56 @@ watch(() => props.project, load)
 .ph-error { flex: 0 0 auto; color: #e53935; font-size: 13px; padding: 6px 14px; }
 
 /* ===== 下方左右布局 ===== */
-.ph-main { flex: 1 1 auto; display: flex; overflow: hidden; }
+/* grid 左列宽可过渡：宽窄切换时左列 287↔0 平滑收放，详情区跟随滑动，避免硬跳 */
+.ph-main {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 287px 1fr;
+  overflow: hidden;
+  position: relative;
+  transition: grid-template-columns 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* 窄屏：左列收为 0，详情平滑铺满；列表另以左上角弹窗（绝对定位）叠加，不占列 */
+.ph-main--narrow { grid-template-columns: 0px 1fr; }
 
-/* 左侧列表 */
+/* 左侧列表（在流侧栏宽度由 grid 左列决定，box-border 使内容宽与原先一致） */
 .ph-left {
-  flex: 0 0 270px;
-  width: 270px;
+  grid-column: 1;
+  box-sizing: border-box;
+  min-width: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   border-right: 1px solid var(--border-color);
   padding: 8px;
 }
+/* 窄屏（<900px）：左侧列表收为左上角弹窗，形式仿「我的提问」浮层 */
+.ph-left--pop {
+  position: absolute;
+  top: 8px; left: 8px;
+  z-index: 1600;
+  flex: none;
+  width: 280px;
+  max-width: calc(100% - 16px);
+  /* 用视口单位约束高度（% 在 flex 项里可能不解析导致撑满），留出顶栏 + 上下边距 */
+  max-height: calc(100vh - 100px);
+  padding-top: 0; /* 去掉顶部留白，粘性分组标题贴顶吸附，不露出下方滚动内容 */
+  border: 1px solid var(--border-color);
+  border-top: 3px solid var(--primary-color);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  background: var(--card-bg);
+  opacity: 0;
+  transform: translateY(-6px) scale(0.96);
+  transform-origin: top left;
+  pointer-events: none;
+  /* 退出：稍长 + 缓入缓出，柔和滑出，避免生硬 */
+  transition: opacity 0.26s ease, transform 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* 进入：弹出缓出，干脆 */
+.ph-left--pop.open { opacity: 1; transform: none; pointer-events: auto; transition: opacity 0.2s ease, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1); }
+/* 宽窄切换瞬间禁用过渡，避免侧栏态→弹窗隐藏态的淡出"一闪" */
+.ph-left.ph-no-anim { transition: none; }
+.ph-list-backdrop { position: absolute; inset: 0; z-index: 1500; }
 .ph-group { margin-bottom: 8px; }
 .ph-group-title {
   display: flex;
@@ -1149,6 +1636,8 @@ watch(() => props.project, load)
 }
 .ph-item:hover .ph-size,
 .ph-item.active .ph-size { background: rgba(255, 255, 255, 0.18); border-color: transparent; color: #fff; }
+.ph-live-tag { color: #20bf6b; font-weight: 600; white-space: nowrap; }
+.ph-item.active .ph-live-tag { color: #b6f5d0; }
 
 .ph-empty-left { padding: 30px 12px; text-align: center; font-size: 13px; color: var(--text-tertiary); }
 
@@ -1169,8 +1658,16 @@ watch(() => props.project, load)
 .ph-tag[data-type="reference"] { background: #f0e2fd; color: #7c39c4; }
 
 /* ===== 右侧详情 ===== */
-.ph-right { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+.ph-right { grid-column: 2; min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; position: relative; }
 .ph-placeholder { margin: 60px auto 0; text-align: center; color: var(--text-tertiary); font-size: 14px; }
+/* 未选择时的空状态：居中图标 + 提示 */
+.ph-empty-detail {
+  flex: 1 1 auto;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; color: var(--text-tertiary);
+}
+.ph-empty-detail svg { opacity: 0.45; }
+.ph-empty-text { font-size: 14px; }
 
 /* 详情标题固定顶部 */
 .ph-detail-head {
@@ -1230,7 +1727,15 @@ watch(() => props.project, load)
   border-radius: 10px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
   overflow: hidden;
+  opacity: 0;
+  transform: translateY(-6px) scale(0.96);
+  transform-origin: top left;
+  pointer-events: none;
+  /* 退出：稍长 + 缓入缓出，柔和滑出，避免生硬 */
+  transition: opacity 0.26s ease, transform 0.26s cubic-bezier(0.4, 0, 0.2, 1);
 }
+/* 进入：弹出缓出，干脆 */
+.ph-qpanel.open { opacity: 1; transform: none; pointer-events: auto; transition: opacity 0.2s ease, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1); }
 .ph-qpanel-title {
   flex: 0 0 auto;
   padding: 10px 14px;
@@ -1256,8 +1761,11 @@ watch(() => props.project, load)
 .ph-qtext { line-height: 1.4; word-break: break-word; }
 .ph-qtime { margin-top: 3px; font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .ph-detail-titlewrap { flex: 1 1 auto; min-width: 0; }
-.ph-detail-title { font-weight: 600; font-size: 14px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ph-detail-meta { display: flex; gap: 10px; font-size: 11px; color: var(--text-tertiary); margin-top: 3px; }
+.ph-detail-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--text-primary); }
+.ph-detail-title-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ph-detail-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; color: var(--text-tertiary); margin-top: 3px; }
+.ph-detail-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; cursor: pointer; }
+.ph-detail-id:hover { color: var(--text-secondary); text-decoration: underline; }
 .ph-link-btn {
   margin-left: auto; flex: 0 0 auto;
   font-size: 12px; background: none;
@@ -1267,31 +1775,34 @@ watch(() => props.project, load)
 .ph-link-btn:hover { background: var(--bg-hover); }
 
 .ph-actions { flex: 0 0 auto; display: flex; gap: 6px; }
+/* 操作/终端按钮的图标统一收到 12px，与筛选胶囊一致 */
+.ph-terminal svg, .ph-act-term svg, .ph-act-icon svg { width: 12px; height: 12px; }
 .ph-act-term {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 12px; border-radius: 6px;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 6px;
   border: 1px solid #3a3f4b; background: #1e2128; color: #4ec9b0;
   font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12px; cursor: pointer; transition: background 0.15s ease;
+  font-size: 11px; cursor: pointer; transition: background 0.15s ease;
 }
 .ph-act-term:hover { background: #2b2f38; }
 .ph-act-icon {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 5px 10px; border-radius: 6px;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 6px;
   border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-secondary);
-  font-size: 12px; cursor: pointer; transition: all 0.15s ease;
+  font-size: 11px; cursor: pointer; transition: all 0.15s ease;
 }
 .ph-act-icon:hover, .ph-act-icon.on { background: var(--bg-hover); color: var(--primary-color); border-color: var(--primary-color); }
 
 /* 实时刷新开关 */
 .ph-act-live {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 11px; border-radius: 6px;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 6px;
   border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-secondary);
-  font-size: 12px; cursor: pointer; transition: all 0.15s ease;
+  font-size: 11px; cursor: pointer; transition: all 0.15s ease;
 }
 .ph-act-live:hover { background: var(--bg-hover); }
 .ph-act-live.on { color: #20bf6b; border-color: rgba(32, 191, 107, 0.5); }
+.ph-online-chip { flex: 0 0 auto; display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; color: #20bf6b; white-space: nowrap; }
 .ph-live-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--text-tertiary); }
 .ph-act-live.on .ph-live-dot { background: #20bf6b; animation: ph-live-pulse 1.6s ease-in-out infinite; }
 @keyframes ph-live-pulse {
@@ -1341,28 +1852,28 @@ watch(() => props.project, load)
 .ph-export-caret.open { transform: rotate(180deg); }
 .ph-export-backdrop { position: fixed; inset: 0; z-index: 1500; }
 .ph-export-menu {
-  position: absolute; top: calc(100% + 5px); right: 0; z-index: 1600;
-  min-width: 168px;
-  display: flex; flex-direction: column; gap: 2px;
-  padding: 5px;
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 1600;
+  min-width: 0;
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 4px;
   background: var(--card-bg);
   border: 1px solid var(--border-color);
-  border-radius: 9px;
+  border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 }
 .ph-export-item {
   display: flex; align-items: center; gap: 8px;
-  padding: 8px 9px; border: none; border-radius: 6px;
+  padding: 5px 10px; border: none; border-radius: 5px;
   background: transparent; color: var(--text-primary);
-  font-size: 12.5px; text-align: left; cursor: pointer;
+  font-size: 11px; text-align: left; white-space: nowrap; cursor: pointer;
 }
 .ph-export-item:hover { background: var(--bg-hover); }
-.ph-export-fmt {
-  flex: 0 0 auto;
-  font-size: 9.5px; font-weight: 700; letter-spacing: 0.5px;
-  padding: 1px 5px; border-radius: 4px;
-  background: var(--primary-color); color: #fff;
+.ph-export-ico {
+  flex: 0 0 14px; width: 14px; height: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-secondary);
 }
+.ph-export-ico svg { width: 100%; height: 100%; }
 
 /* 滚动内容区 */
 .ph-detail-scroll { flex: 1 1 auto; overflow-y: auto; padding: 14px 16px; }
@@ -1420,7 +1931,7 @@ watch(() => props.project, load)
   background: var(--bg-hover); color: var(--text-tertiary); border: 1px solid var(--border-color);
 }
 .blk-body { font-size: 13px; line-height: 1.65; color: var(--text-primary); }
-.blk-sys-text { color: var(--text-secondary); font-style: italic; }
+.blk-sys-text { font-size: 12.5px; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; }
 .blk-summary {
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 12.5px; color: var(--k-accent); word-break: break-all; margin-bottom: 4px;
@@ -1595,6 +2106,151 @@ watch(() => props.project, load)
   white-space: pre-wrap; word-break: break-word;
 }
 .blk-pre.pre-err { border-color: #f0b4b4; }
+
+/* ===== 工具调用定制渲染 ===== */
+/* ToolSearch：匹配到的工具列表 */
+.ts-list { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+.ts-item {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 6px 9px; border-radius: 6px;
+  background: var(--card-bg); border: 1px solid var(--border-color);
+}
+.ts-name {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px; font-weight: 600; color: var(--k-accent);
+  word-break: break-all;
+}
+.ts-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.45; word-break: break-word; }
+
+/* Markdown 结果：阅读模式 / 源码 切换条 */
+.md-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 3px; }
+.md-toggle {
+  display: inline-flex; flex: 0 0 auto;
+  border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden;
+}
+.md-tab {
+  padding: 2px 9px; font-size: 11px; cursor: pointer; user-select: none;
+  color: var(--text-secondary); background: var(--card-bg); transition: all 0.12s ease;
+}
+.md-tab + .md-tab { border-left: 1px solid var(--border-color); }
+.md-tab:hover { color: var(--text-primary); }
+.md-tab.active { background: var(--k-accent); color: #fff; }
+.md-render {
+  margin: 4px 0 0;
+  padding: 8px 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 12.5px;
+  max-height: 460px; overflow: auto;
+}
+
+/* AskUserQuestion：渲染成问答卡，与工具内容明显区分（蓝=问题 / 绿=已选） */
+.ask-detail { display: flex; flex-direction: column; gap: 10px; }
+.ask-q {
+  padding: 12px 13px;
+  border-radius: 10px;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+}
+.ask-q-head { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+.ask-q-badge {
+  flex: 0 0 auto; width: 20px; height: 20px; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: #fff; background: #4f8cff;
+}
+.ask-q-tag {
+  flex: 0 0 auto;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+  padding: 2px 8px; border-radius: 4px;
+  color: #4f8cff; background: rgba(79, 140, 255, 0.12);
+}
+.ask-q-text {
+  font-size: 13.5px; font-weight: 600; line-height: 1.6;
+  color: var(--text-primary); margin-bottom: 10px;
+}
+.ask-opts { display: flex; flex-direction: column; gap: 7px; }
+.ask-opt {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 9px 11px; border-radius: 8px;
+  background: var(--bg-hover); border: 1px solid var(--border-color);
+  opacity: 0.7;
+}
+.ask-opt.chosen {
+  opacity: 1;
+  border-color: #20bf6b;
+  background: rgba(32, 191, 107, 0.09);
+  box-shadow: 0 0 0 1px rgba(32, 191, 107, 0.32);
+}
+.ask-opt-mark {
+  flex: 0 0 auto; width: 18px; height: 18px; margin-top: 1px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1.5px solid var(--text-tertiary); color: transparent;
+  font-size: 11px; font-weight: 700; line-height: 1; box-sizing: border-box;
+}
+.ask-opt.chosen .ask-opt-mark { border-color: #20bf6b; background: #20bf6b; color: #fff; }
+.ask-opt-body { flex: 1 1 auto; min-width: 0; }
+.ask-opt-label-row { display: flex; align-items: center; gap: 8px; }
+.ask-opt-label { font-size: 12.5px; font-weight: 600; color: var(--text-primary); }
+.ask-opt.chosen .ask-opt-label { color: #16a34a; }
+.ask-opt-badge {
+  flex: 0 0 auto; font-size: 10px; font-weight: 700;
+  padding: 1px 8px; border-radius: 999px;
+  color: #fff; background: #20bf6b;
+}
+.ask-opt-desc { margin-top: 3px; font-size: 12px; color: var(--text-secondary); line-height: 1.55; }
+
+/* Write：文件路径 + 结果 */
+.wr-path {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px; color: var(--k-accent); word-break: break-all;
+}
+.wr-res { font-size: 12px; color: var(--text-secondary); }
+
+/* Read：读取行范围标注 */
+.read-range {
+  margin-left: 8px;
+  font-family: inherit; font-size: 11px; font-weight: 600;
+  padding: 1px 7px; border-radius: 999px;
+  color: var(--text-secondary); background: var(--bg-hover); border: 1px solid var(--border-color);
+}
+
+/* Grep：匹配模式 + 范围 + 命中高亮 */
+.grep-pattern {
+  margin-top: 2px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12.5px; font-weight: 600; color: var(--text-primary);
+  background: var(--bg-hover); border: 1px solid var(--border-color);
+  border-radius: 6px; padding: 6px 9px; word-break: break-all;
+}
+.grep-scope { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.grep-chip {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px; color: var(--text-secondary);
+  background: var(--card-bg); border: 1px solid var(--border-color);
+  border-radius: 999px; padding: 1px 8px; word-break: break-all;
+}
+.grep-chip-k { color: var(--text-tertiary); margin-right: 5px; font-weight: 600; }
+.grep-file { padding: 4px 9px; border-radius: 6px; background: var(--card-bg); border: 1px solid var(--border-color); }
+.grep-file code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px; color: var(--k-accent); word-break: break-all;
+}
+.grep-lines {
+  margin-top: 2px;
+  border: 1px solid var(--border-color); border-radius: 6px; overflow: auto;
+  max-height: 460px; background: var(--card-bg);
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55;
+}
+.grep-line { display: flex; gap: 8px; padding: 0 10px; white-space: pre-wrap; word-break: break-word; }
+.grep-no { flex: 0 0 auto; min-width: 40px; text-align: right; color: var(--text-tertiary); user-select: none; }
+.grep-text { flex: 1 1 auto; min-width: 0; }
+.grep-hit { background: rgba(250, 130, 49, 0.10); }
+.grep-hit .grep-no { color: #fa8231; font-weight: 700; }
+.grep-hit .grep-text { color: var(--text-primary); }
+.grep-ctx .grep-text { color: var(--text-secondary); }
+.grep-raw .grep-text { color: var(--text-secondary); }
+.grep-sep { justify-content: center; color: var(--text-tertiary); }
 
 /* 类型筛选条（含我的提问导航） */
 .ph-filterbar {
@@ -1779,6 +2435,10 @@ watch(() => props.project, load)
   /* 暗色：工具报错红卡 */
   .sub.tool-error { --k-accent: #ff6b66; --k-bg: rgba(229, 57, 53, 0.14); }
   .sub.tool-error .tool-line-text { color: #ff8a85; }
+
+  /* 暗色：AskUserQuestion 问答卡配色 */
+  .ask-q-tag { color: #8fb6f5; background: rgba(79, 140, 255, 0.18); }
+  .ask-opt.chosen .ask-opt-label { color: #5fcf8d; }
 
   /* 暗色：Edit diff 配色 */
   .diff-add { background: rgba(32, 191, 107, 0.18); }
