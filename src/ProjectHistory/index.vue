@@ -103,9 +103,23 @@ const userQuestions = computed(() => {
 })
 const previewText = (t: string) => (t || '').replace(/\s+/g, ' ').trim().slice(0, 60)
 const jumpToBlock = (i: number, smooth = true) => {
-  armSpySuppress() // 显式跳转：锁住 scrollspy，避免平滑滚动把刚选定的序号覆盖
+  armSpySuppress() // 显式跳转：锁住 scrollspy，避免滚动把刚选定的序号覆盖
   const el = curBlockEls()[i]
-  if (el && el.scrollIntoView) el.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' })
+  const sc = scrollEl.value
+  if (el && el.scrollIntoView) {
+    if (smooth && sc) {
+      // 两段式平滑：先瞬时定位（取目标真实位置、触发其周边渲染），远距离则瞬时退回目标前一屏，
+      // 再平滑滑到目标——平滑段只跨约一屏且都是已渲染内容，既有平滑动画又不飞渲整页、不丢帧（序号不跳）。
+      const before = sc.scrollTop
+      el.scrollIntoView({ behavior: 'auto', block: 'start' })
+      const targetTop = sc.scrollTop
+      const far = Math.abs(targetTop - before) > sc.clientHeight * 1.5
+      sc.scrollTop = far ? targetTop - (targetTop >= before ? 1 : -1) * sc.clientHeight : before
+      requestAnimationFrame(() => { scrollEl.value?.scrollTo({ top: targetTop, behavior: 'smooth' }) })
+    } else {
+      el.scrollIntoView({ behavior: 'auto', block: 'start' })
+    }
+  }
   highlightIdx.value = i
   setTimeout(() => { if (highlightIdx.value === i) highlightIdx.value = -1 }, 1200)
 }
@@ -113,7 +127,7 @@ const jumpToQuestion = (n: number) => {
   const qs = userQuestions.value
   if (!qs.length) return
   curQ.value = (n + qs.length) % qs.length
-  jumpToBlock(qs[curQ.value].index, false) // 瞬时跳转：平滑滚动期间易被 scrollspy 抢序号，连点尤甚
+  jumpToBlock(qs[curQ.value].index) // 两段式平滑跳转
 }
 const openQuestion = (q: any, n: number) => {
   curQ.value = n
@@ -607,20 +621,27 @@ const isNearBottom = () => {
   if (!el) return true
   return el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
 }
-const scrollToBottom = () => {
+const scrollToBottom = (smooth = false) => {
   const el = scrollEl.value
   if (el) {
-    // 瞬时贴底：content-visibility 下平滑滚动会让视口逐段现渲整页、极卡；且 scrollHeight 含估算高度，
-    // 底部内容渲染后真实高度可能变化，故跨几帧重设直至稳定，确保真正到底。
-    el.scrollTop = el.scrollHeight
-    let tries = 0
-    const settle = () => {
-      const e = scrollEl.value
-      if (!e) return
-      e.scrollTop = e.scrollHeight
-      if (++tries < 3) requestAnimationFrame(settle)
+    if (smooth) {
+      // 用户点「回到底部」：两段式平滑。远距离先瞬时跳到底部前一屏（只渲染底部两屏），
+      // 再平滑滑到底——平滑段只跨约一屏的已渲染内容，流畅且不飞渲整页。
+      const target = el.scrollHeight - el.clientHeight
+      if (target - el.scrollTop > el.clientHeight * 1.5) el.scrollTop = Math.max(0, target - el.clientHeight)
+      requestAnimationFrame(() => { const e = scrollEl.value; if (e) e.scrollTo({ top: e.scrollHeight, behavior: 'smooth' }) })
+    } else {
+      // 轮询自动跟随：瞬时贴底，避免与流式刷新打架；content-visibility 下底部渲染后高度会变，跨几帧重设直至稳定。
+      el.scrollTop = el.scrollHeight
+      let tries = 0
+      const settle = () => {
+        const e = scrollEl.value
+        if (!e) return
+        e.scrollTop = e.scrollHeight
+        if (++tries < 3) requestAnimationFrame(settle)
+      }
+      requestAnimationFrame(settle)
     }
-    requestAnimationFrame(settle)
   }
   showJumpBottom.value = false
   markSeen()
@@ -1739,7 +1760,7 @@ watch(() => props.project, load)
             class="ph-jump-bottom"
             :class="{ 'has-new': hasNew }"
             :title="hasNew ? jumpLabel + '，点击查看最新' : '滚动到底部'"
-            @click="scrollToBottom()"
+            @click="scrollToBottom(true)"
           >
             <svg class="ph-jump-arrow" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 6 5 5 5-5" /><path d="m7 13 5 5 5-5" /></svg>
             <span class="ph-jump-text">{{ jumpLabel }}</span>
