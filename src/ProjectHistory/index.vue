@@ -621,8 +621,24 @@ const isNearBottom = () => {
   return el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
 }
 const scrollToBottom = () => {
-  // 瞬时贴底：content-visibility 下底部渲染后高度会变，settleScroll 跨帧重设直至真正到底（落点精确、按钮正确消失）。
-  settleScroll(() => { const e = scrollEl.value; if (e) e.scrollTop = e.scrollHeight })
+  // 瞬时贴底：content-visibility 下底部内容延迟一两帧才渲染、令高度增长又离了底。
+  // 故逐帧校正——仅在「离底间隙≤1 且连续 3 帧稳定」才停（容忍延迟渲染），24 帧封顶保险。
+  let tries = 0
+  let stable = 0
+  const pin = () => {
+    const e = scrollEl.value
+    if (!e) return
+    if (e.scrollHeight - e.scrollTop - e.clientHeight <= 1) {
+      stable++
+    } else {
+      stable = 0
+      e.scrollTop = e.scrollHeight
+    }
+    if (stable < 3 && ++tries < 24) requestAnimationFrame(pin)
+  }
+  const e0 = scrollEl.value
+  if (e0) e0.scrollTop = e0.scrollHeight
+  requestAnimationFrame(pin)
   showJumpBottom.value = false
   markSeen()
 }
