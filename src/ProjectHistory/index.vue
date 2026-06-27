@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { marked } from 'marked'
+import { useFind } from './useFind'
 
 const props = defineProps<{
   project: any
@@ -138,6 +139,49 @@ const kindCounts = computed(() => {
   return c
 })
 const filterChips = computed(() => FILTER_KINDS.filter((k) => (kindCounts.value[k] || 0) > 0))
+
+// ---- 页内查找（VS Code 风格）----
+const findInput = ref<HTMLInputElement | null>(null)
+// 选区文本作为打开时的预填
+const selText = () => {
+  try { return window.getSelection ? String(window.getSelection()) : '' } catch (_) { return '' }
+}
+// 块下标 → 折叠展开键（仅 思考/工具调用 可折叠；其余恒在 DOM 中返回 ''）
+const keyForBlock = (i: number) => {
+  const b = sessionDetail.value && sessionDetail.value.blocks[i]
+  if (!b) return ''
+  if (b.kind === 'thinking') return 't' + i
+  if (b.kind === 'tool_use') return 'tu' + i
+  return ''
+}
+// 块的可搜文本：正文 + 命令 + 工具名/入参/结果
+const blockSearchText = (b: any) => {
+  if (!b) return ''
+  let s = b.text || ''
+  if (b.command) s += ' ' + (b.command.name || '') + ' ' + (b.command.args || '')
+  if (b.kind === 'tool_use') {
+    s += ' ' + (b.name || '')
+    try { s += ' ' + JSON.stringify(b.input || '') } catch (_) { /* 入参不可序列化则跳过 */ }
+    if (b.result) s += ' ' + (b.result.text || '')
+  }
+  return s
+}
+const {
+  supported: findSupported, visible: findVisible, query: findQuery,
+  caseSensitive: findCase, wholeWord: findWord, useRegex: findRegex,
+  count: findCount, current: findCurrent, invalid: findInvalid,
+  open: findOpen, close: findClose, next: findNext, prev: findPrev, refresh: findRefresh
+} = useFind({
+  scrollEl,
+  getBlocks: () => sessionDetail.value?.blocks,
+  isKindVisible: (k: string) => !!visibleKinds[k],
+  blockSearchText,
+  keyForBlock,
+  isExpanded: (i: number) => { const k = keyForBlock(i); return k ? isOpen(k) : true },
+  setExpanded: (i: number, v: boolean) => { const k = keyForBlock(i); if (k) expandedKeys[k] = v }
+})
+// 打开后聚焦并全选输入框
+watch(findVisible, (v) => { if (v) nextTick(() => { findInput.value?.focus(); findInput.value?.select() }) })
 
 // ---- 对话框辅助信息：完整时间 / 模型 / token 用量 ----
 const fmtDateTime = (ts: string) => {
@@ -601,6 +645,7 @@ const refreshSession = () => {
       hasNew.value = true
       newCount.value = Math.max(0, userQuestions.value.length - seenQCount)
     }
+    if (findVisible.value) findRefresh() // 内容重渲染后旧 Range 失效，重建高亮
   })
 }
 const stopPoll = () => {
@@ -650,6 +695,7 @@ const stopLiveTimer = () => {
 const selectMemory = (m: any) => {
   showList.value = false
   stopPoll()
+  findClose()
   mdCache.clear()
   selected.value = { type: 'memory', id: m.fileName }
   sessionDetail.value = null
@@ -664,6 +710,7 @@ const selectSession = (s: any) => {
   selectedSession.value = s
   detailLoading.value = true
   showQuestions.value = false
+  findClose()
   showJumpBottom.value = false
   hasNew.value = false
   newCount.value = 0
@@ -862,6 +909,17 @@ ${inner}
 
 // ---- 键盘 ----
 const onKeydown = (e: KeyboardEvent) => {
+  // 查找框打开时：Esc 关闭查找；屏蔽列表方向键；其余交给输入框，不走列表逻辑
+  if (findVisible.value) {
+    if (e.key === 'Escape') { e.preventDefault(); findClose() }
+    return
+  }
+  // Ctrl/Cmd+F：仅会话详情、且环境支持时启用页内查找
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+    if (findSupported && selected.value && selected.value.type === 'session') {
+      e.preventDefault(); findOpen(selText()); return
+    }
+  }
   if (e.key === 'Escape') { e.preventDefault(); emit('back'); return }
   const items = flatItems.value
   if (!items.length) return
@@ -888,6 +946,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('resize', onResize)
   stopPoll(); stopLiveTimer()
+  findClose()
 })
 watch(() => props.project, load)
 </script>
@@ -1095,6 +1154,9 @@ watch(() => props.project, load)
               </button>
             </div>
             <div v-if="userQuestions.length" class="ph-qnav">
+              <button v-if="findSupported" class="ph-qbtn ph-qbtn-find" title="查找 (Ctrl+F)" @click="findOpen(selText())">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
+              </button>
               <button class="ph-qbtn" title="上一个提问" @click="jumpToQuestion(curQ - 1)">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6" /></svg>
               </button>
@@ -1122,6 +1184,34 @@ watch(() => props.project, load)
                 </div>
               </div>
             </div>
+          </div>
+
+          <div v-if="findSupported && findVisible" class="ph-find">
+            <input
+              ref="findInput"
+              v-model="findQuery"
+              class="ph-find-input"
+              :class="{ invalid: findInvalid }"
+              type="text"
+              placeholder="查找"
+              spellcheck="false"
+              @keydown.enter.exact.prevent="findNext()"
+              @keydown.enter.shift.prevent="findPrev()"
+            />
+            <span class="ph-find-count">{{ findCount ? (findCurrent + 1) + '/' + findCount : '0/0' }}</span>
+            <button class="ph-find-btn" title="上一个 (Shift+Enter)" :disabled="!findCount" @click="findPrev()">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6" /></svg>
+            </button>
+            <button class="ph-find-btn" title="下一个 (Enter)" :disabled="!findCount" @click="findNext()">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+            </button>
+            <span class="ph-find-sep"></span>
+            <button class="ph-find-btn ph-find-toggle" :class="{ on: findCase }" title="区分大小写" @click="findCase = !findCase">Aa</button>
+            <button class="ph-find-btn ph-find-toggle" :class="{ on: findWord }" title="全字匹配" @click="findWord = !findWord">&#9474;ab&#9474;</button>
+            <button class="ph-find-btn ph-find-toggle" :class="{ on: findRegex }" title="正则表达式" @click="findRegex = !findRegex">.*</button>
+            <button class="ph-find-btn" title="关闭 (Esc)" @click="findClose()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+            </button>
           </div>
 
           <div ref="scrollEl" class="ph-detail-scroll" @scroll="onDetailScroll">
@@ -1702,6 +1792,8 @@ watch(() => props.project, load)
 }
 .ph-qbtn:first-child { border-right: 1px solid var(--border-color); }
 .ph-qbtn:hover { background: var(--primary-color); color: #fff; }
+.ph-qbtn-find { border-right: 1px solid var(--border-color); }
+.ph-qnav .ph-qbtn-find + .ph-qbtn { border-right: 1px solid var(--border-color); }
 .ph-qlabel {
   height: 26px; padding: 0 10px;
   border: 1px solid var(--primary-color); border-radius: 6px;
@@ -2449,4 +2541,48 @@ watch(() => props.project, load)
   /* 暗色：回底按钮空闲态玻璃底改用深色卡片色调 */
   .ph-jump-bottom { background: rgba(42, 42, 42, 0.6); }
 }
+
+/* ---- 页内查找浮层 ---- */
+.ph-find {
+  position: absolute;
+  top: 8px; right: 18px;
+  z-index: 1700;
+  display: flex; align-items: center; gap: 2px;
+  padding: 4px 6px;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+.ph-find-input {
+  width: 180px; height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color); border-radius: 6px;
+  background: var(--card-bg); color: var(--text-primary);
+  font-size: 13px; outline: none;
+}
+.ph-find-input:focus { border-color: var(--primary-color); }
+.ph-find-input.invalid { border-color: #e5534b; }
+.ph-find-count {
+  min-width: 44px; padding: 0 4px;
+  text-align: center; font-size: 12px; color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ph-find-sep { width: 1px; height: 18px; margin: 0 2px; background: var(--border-color); }
+.ph-find-btn {
+  width: 26px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; border-radius: 5px;
+  background: transparent; color: var(--text-secondary);
+  font-size: 12px; cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.ph-find-btn:hover:not(:disabled) { background: var(--primary-color); color: #fff; }
+.ph-find-btn:disabled { opacity: 0.4; cursor: default; }
+.ph-find-toggle { font-weight: 600; }
+.ph-find-toggle.on { background: var(--primary-color); color: #fff; }
+
+/* ---- 查找命中高亮（CSS Custom Highlight API）---- */
+::highlight(ph-find) { background-color: rgba(250, 204, 21, 0.45); }
+::highlight(ph-find-current) { background-color: rgba(249, 115, 22, 0.9); color: #1a1a1a; }
 </style>
