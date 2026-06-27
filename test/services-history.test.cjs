@@ -142,6 +142,31 @@ test('parseSession: 空命令输出不产出块', () => {
   assert.equal(blocks.length, 0)
 })
 
+test('parseSession: 上下文压缩摘要并入对应「上下文压缩」系统块、不当作用户气泡', () => {
+  const { services } = makeEnv()
+  const jsonl = [
+    line({ type: 'system', subtype: 'compact_boundary', compactMetadata: { trigger: 'manual', preTokens: 5000 } }),
+    line({ type: 'user', isCompactSummary: true, message: { role: 'user', content: 'This session is being continued...\n\nSummary:\n要点一' } })
+  ].join('\n')
+  const { blocks } = services.parseSession(jsonl)
+  // 摘要并入压缩块，不产出独立用户块
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].kind, 'system')
+  assert.equal(blocks[0].subtype, 'compact_boundary')
+  assert.match(blocks[0].text, /上下文已压缩/)
+  assert.match(blocks[0].summary, /Summary:[\s\S]*要点一/)
+})
+
+test('parseSession: 无前置压缩块时摘要退化为独立系统块（仍非用户气泡）', () => {
+  const { services } = makeEnv()
+  const jsonl = line({ type: 'user', isCompactSummary: true, message: { role: 'user', content: 'This session is being continued...' } })
+  const { blocks } = services.parseSession(jsonl)
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].kind, 'system')
+  assert.equal(blocks[0].subtype, 'compact_boundary')
+  assert.match(blocks[0].summary, /being continued/)
+})
+
 test('parseSession: 未配对的 tool_result 单独成块', () => {
   const { services } = makeEnv()
   const jsonl = line({

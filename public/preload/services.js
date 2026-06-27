@@ -1201,6 +1201,7 @@ function parseTaskNotification (text) {
 function parseSession (content) {
   const blocks = []
   const toolUseById = {}
+  let lastCompactBoundary = null // 最近的「上下文压缩」系统块，供其后的 isCompactSummary 摘要并入
   const meta = { gitBranch: '', version: '', firstTimestamp: '', lastTimestamp: '', count: 0 }
   const lines = (typeof content === 'string' ? content : '').split(/\r?\n/)
   for (const line of lines) {
@@ -1243,7 +1244,11 @@ function parseSession (content) {
           .trim()
         if (meaningful) text = raw
       }
-      if (text) { blocks.push({ kind: 'system', subtype: d.subtype || '', text, sidechain, ts }); meta.count++ }
+      if (text) {
+        const blk = { kind: 'system', subtype: d.subtype || '', text, sidechain, ts }
+        if (d.subtype === 'compact_boundary') lastCompactBoundary = blk
+        blocks.push(blk); meta.count++
+      }
       continue
     }
     const message = d.message
@@ -1257,6 +1262,15 @@ function parseSession (content) {
       const rawText = typeof c === 'string'
         ? c
         : (Array.isArray(c) ? c.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n') : '')
+      // 上下文压缩摘要（isCompactSummary）：压缩产物而非用户输入 → 并入对应「上下文压缩」系统块
+      if (d.isCompactSummary) {
+        const summary = rawText.trim()
+        if (summary) {
+          if (lastCompactBoundary) lastCompactBoundary.summary = summary
+          else { blocks.push({ kind: 'system', subtype: 'compact_boundary', text: '上下文已压缩', summary, sidechain, ts }); meta.count++ }
+        }
+        continue
+      }
       // 系统注入的子任务完成通知：非用户输入，作为系统提示块（带 agentId 供前端跳转）
       const notif = parseTaskNotification(rawText)
       if (notif) {

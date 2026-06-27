@@ -172,12 +172,14 @@ const keyForBlock = (i: number) => {
   if (b.kind === 'tool_result' && big(b.text)) return 'tr' + i
   if (b.kind === 'attachment' && big(b.text)) return 'at' + i
   if (b.kind === 'system' && b.subtype === 'local_command' && big(b.text)) return 'so' + i
+  if (b.kind === 'system' && b.subtype === 'compact_boundary' && b.summary) return 'cs' + i
   return ''
 }
 // 块的可搜文本：正文 + 命令 + 工具名/入参/结果
 const blockSearchText = (b: any) => {
   if (!b) return ''
   let s = b.text || ''
+  if (b.summary) s += ' ' + b.summary
   if (b.command) s += ' ' + (b.command.name || '') + ' ' + (b.command.args || '')
   if (b.kind === 'tool_use') {
     s += ' ' + (b.name || '')
@@ -1703,6 +1705,12 @@ watch(() => props.project, load)
                         <template v-else-if="it.block.kind === 'system' && it.block.subtype === 'local_command'">
                           <pre v-if="!big(it.block.text) || isOpen('so' + it.index)" class="blk-pre">{{ sysText(it.block) }}</pre>
                           <div v-if="big(it.block.text)" class="blk-toggle" @click="toggle('so' + it.index)">{{ isOpen('so' + it.index) ? '收起' : '展开全部' }}</div>
+                        </template>
+                        <!-- 系统·上下文压缩：一行说明 + 可展开本次压缩摘要 -->
+                        <template v-else-if="it.block.kind === 'system' && it.block.subtype === 'compact_boundary' && it.block.summary">
+                          <div class="blk-sys-text">{{ sysText(it.block) }}</div>
+                          <div class="blk-toggle" @click="toggle('cs' + it.index)">{{ isOpen('cs' + it.index) ? '收起摘要' : '查看本次压缩摘要' }}</div>
+                          <pre v-if="isOpen('cs' + it.index)" class="blk-pre">{{ it.block.summary }}</pre>
                         </template>
                         <!-- 系统：极简朴素，一行文本 -->
                         <div v-else class="blk-sys-text">{{ sysText(it.block) }}</div>
