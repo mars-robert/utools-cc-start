@@ -93,10 +93,10 @@ const userQuestions = computed(() => {
   return out
 })
 const previewText = (t: string) => (t || '').replace(/\s+/g, ' ').trim().slice(0, 60)
-const jumpToBlock = (i: number) => {
+const jumpToBlock = (i: number, smooth = true) => {
   armSpySuppress() // 显式跳转：锁住 scrollspy，避免平滑滚动把刚选定的序号覆盖
   const el = blockEls[i]
-  if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  if (el && el.scrollIntoView) el.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' })
   highlightIdx.value = i
   setTimeout(() => { if (highlightIdx.value === i) highlightIdx.value = -1 }, 1200)
 }
@@ -820,7 +820,7 @@ const switchView = (agentId: string | null, fromIndex: number | null = null) => 
 const returnToMain = () => {
   const idx = returnToIndex.value
   switchView(null)
-  if (idx != null) nextTick(() => jumpToBlock(idx))
+  if (idx != null) nextTick(() => jumpToBlock(idx, false)) // 返回主任务：直接定位到来源锚点，不做平滑滚动
 }
 
 const selectItem = (item: any) => {
