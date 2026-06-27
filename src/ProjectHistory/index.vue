@@ -2824,6 +2824,6 @@ watch(() => props.project, load)
 }
 .agent-sub-go svg { transition: transform 0.15s ease; }
 .agent-sub.clickable:hover .agent-sub-go svg { transform: translateX(3px); }
-.ph-act-back { border-color: var(--primary-color); color: var(--primary-color); }
-.ph-act-back:hover { background: var(--primary-color); color: #fff; }
+.ph-act-back { background: var(--primary-color); color: #fff; border-color: var(--primary-color); font-weight: 600; }
+.ph-act-back:hover { opacity: 0.9; }
 </style>
