@@ -152,6 +152,8 @@ const keyForBlock = (i: number) => {
   if (!b) return ''
   if (b.kind === 'thinking') return 't' + i
   if (b.kind === 'tool_use') return 'tu' + i
+  if (b.kind === 'tool_result' && big(b.text)) return 'tr' + i
+  if (b.kind === 'attachment' && big(b.text)) return 'at' + i
   return ''
 }
 // 块的可搜文本：正文 + 命令 + 工具名/入参/结果
