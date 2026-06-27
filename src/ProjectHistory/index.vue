@@ -2808,13 +2808,11 @@ watch(() => props.project, load)
 .agent-sub-status .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .agent-sub-status.st-completed { color: #3aa564; }
 .agent-sub-go {
-  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px;
-  padding: 4px 11px; border-radius: 7px;
-  font-size: 11.5px; font-weight: 600; color: var(--primary-color);
-  border: 1px solid var(--border-color);
-  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; font-weight: 600; color: var(--primary-color); white-space: nowrap;
 }
-.agent-sub.clickable:hover .agent-sub-go { background: var(--primary-color); color: #fff; border-color: var(--primary-color); }
+.agent-sub-go svg { transition: transform 0.15s ease; }
+.agent-sub.clickable:hover .agent-sub-go svg { transform: translateX(3px); }
 .ph-act-back { border-color: var(--primary-color); color: var(--primary-color); }
 .ph-act-back:hover { background: var(--primary-color); color: #fff; }
 </style>
