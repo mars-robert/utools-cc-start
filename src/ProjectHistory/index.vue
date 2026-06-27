@@ -57,6 +57,8 @@ const POLL_MS = 800 // 检测间隔：仅一次 statSync，变化才重读，故
 const NEAR_BOTTOM_PX = 80
 let pollTimer: number | null = null
 let lastSig = '' // 上次已加载文件的签名（mtime:size），用于跳过无变化的轮询
+let mainDetail: any = null // 主任务解析结果缓存；子任务返回时直接还原，避免重读重解析
+let mainSig = '' // mainDetail 对应的文件签名，返回后据此判断是否需轮询重读
 
 // 活跃会话：精确识别「正在运行的 claude 实例打开的 session」，只对其实时刷新
 const activeIds = ref<Set<string>>(new Set()) // 本项目当前活跃 session id 集合
@@ -655,7 +657,7 @@ const refreshSession = () => {
   const wasNearBottom = isNearBottom()
   try {
     const next = window.services.readSession(props.project.dirName, s.sessionId)
-    if (next) { sessionDetail.value = next; lastSig = sig }
+    if (next) { sessionDetail.value = next; lastSig = sig; mainDetail = next; mainSig = sig }
   } catch (_) { return }
   nextTick(() => {
     if (wasNearBottom) { scrollToBottom() }
@@ -752,6 +754,7 @@ const selectSession = (s: any) => {
       sessionDetail.value = window.services.readSession(props.project.dirName, s.sessionId)
       subagents.value = window.services.listSubagents(props.project.dirName, s.sessionId) || []
       lastSig = sessionSig(s)
+      mainDetail = sessionDetail.value; mainSig = lastSig
     } catch (err: any) {
       error.value = err && err.message ? err.message : String(err)
     } finally {
@@ -786,15 +789,15 @@ const switchView = (agentId: string | null, fromIndex: number | null = null) => 
   highlightIdx.value = -1
   resetFilters()
   stopPoll()
-  mdCache.clear()
   for (const k in blockEls) delete blockEls[k]
   for (const k in expandedKeys) delete expandedKeys[k]
   const dn = props.project.dirName
   const sid = selectedSession.value.sessionId
   try {
+    // 主任务直接还原缓存（不重读不重解析，保留 mdCache 命中即时渲染），仅子任务读文件
     sessionDetail.value = agentId
       ? window.services.readSubagent(dn, sid, agentId)
-      : window.services.readSession(dn, sid)
+      : (mainDetail || window.services.readSession(dn, sid))
   } catch (err: any) {
     error.value = err && err.message ? err.message : String(err)
   }
@@ -803,7 +806,7 @@ const switchView = (agentId: string | null, fromIndex: number | null = null) => 
     currentLive.value = false
     autoRefresh.value = false
   } else {
-    lastSig = sessionSig(selectedSession.value)
+    lastSig = mainSig // 用缓存时的签名：文件未变则轮询跳过，变了则下次轮询自动重读
     currentLive.value = isSessionLive(sid)
     autoRefresh.value = currentLive.value
     startPoll()
