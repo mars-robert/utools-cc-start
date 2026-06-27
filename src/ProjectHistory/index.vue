@@ -25,6 +25,7 @@ const detailLoading = ref(false)
 const subagents = ref<any[]>([])        // 当前会话的子任务列表
 const currentAgent = ref<string | null>(null) // 当前视图：null=主任务 / agentId=某子任务
 const showSubtasks = ref(false)         // 切换器下拉开关
+const returnToIndex = ref<number | null>(null) // 经通知跳进子任务时记下来源块下标，用于返回定位
 const subagentById = (id: string | null) => (id ? subagents.value.find((a: any) => a.agentId === id) : null)
 const subagentLabel = (b: any) => (subagentById(b.agentId)?.description) || b.text || '子任务'
 const currentViewLabel = computed(() => (currentAgent.value ? (subagentById(currentAgent.value)?.description || currentAgent.value) : '主任务'))
@@ -216,6 +217,15 @@ const shortModel = (m: string) => {
   return fam ? fam.charAt(0).toUpperCase() + fam.slice(1) : m.replace(/^claude-/, '')
 }
 const fmtTokK = (n: number) => (!n ? '0' : (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n)))
+// 毫秒 → 紧凑时长（s / m s / h m），用于子任务通知用量
+const fmtDuration = (ms: number) => {
+  if (!ms) return ''
+  const s = Math.round(ms / 1000)
+  if (s < 60) return s + 's'
+  const m = Math.floor(s / 60)
+  if (m < 60) return m + 'm' + (s % 60 ? (s % 60) + 's' : '')
+  return Math.floor(m / 60) + 'h' + (m % 60 ? (m % 60) + 'm' : '')
+}
 
 // 聚合一个 Claude 回合的辅助信息（usage 按引用去重，避免同一条消息重复计数）
 const claudeMeta = (items: any[]) => {
@@ -763,9 +773,10 @@ const selectSession = (s: any) => {
 }
 
 // 在主任务/子任务间切换：仅替换 sessionDetail，复用全部既有渲染
-const switchView = (agentId: string | null) => {
+const switchView = (agentId: string | null, fromIndex: number | null = null) => {
   if (!selectedSession.value) return
   showSubtasks.value = false
+  returnToIndex.value = agentId ? fromIndex : null
   if (currentAgent.value === agentId) return
   currentAgent.value = agentId
   findClose()
@@ -805,6 +816,13 @@ const switchView = (agentId: string | null) => {
     updateJumpBtn()
     seenQCount = userQuestions.value.length
   })
+}
+
+// 从子任务返回主任务；若经通知跳转进来，回到来源通知位置并高亮
+const returnToMain = () => {
+  const idx = returnToIndex.value
+  switchView(null)
+  if (idx != null) nextTick(() => jumpToBlock(idx))
 }
 
 const selectItem = (item: any) => {
@@ -1170,7 +1188,12 @@ watch(() => props.project, load)
               </div>
             </div>
             <div class="ph-actions">
+              <button v-if="currentAgent" class="ph-act-term ph-act-back" title="返回主任务" @click="returnToMain()">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7" /><path d="M19 12H5" /></svg>
+                返回主任务
+              </button>
               <button
+                v-if="!currentAgent"
                 class="ph-act-live"
                 :class="{ on: autoRefresh }"
                 :title="autoRefresh ? '实时刷新中，有更新自动跟随，点击暂停' : '已暂停，点击开启实时刷新'"
@@ -1360,11 +1383,22 @@ watch(() => props.project, load)
                   :ref="(el) => setBlockRef(el, t.index)"
                   class="chat-subtask-notice"
                   :class="{ 'blk-flash': highlightIdx === t.index, clickable: !!subagentById(t.block.agentId) }"
-                  @click="subagentById(t.block.agentId) && switchView(t.block.agentId)"
+                  @click="subagentById(t.block.agentId) && switchView(t.block.agentId, t.index)"
                 >
-                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.7 21a2 2 0 0 1-3.4 0" /></svg>
-                  <span class="chat-subtask-text">子任务：{{ subagentLabel(t.block) }}</span>
-                  <span v-if="subagentById(t.block.agentId)" class="chat-subtask-go">查看 ›</span>
+                  <span class="csn-ico">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="18" r="2.4" /><circle cx="18" cy="12" r="2.4" /><path d="M8.2 6.6c5 .4 6.6 1.8 7.4 4.2M8.2 17.4c5-.4 6.6-1.8 7.4-4.2" /></svg>
+                  </span>
+                  <div class="csn-body">
+                    <div class="csn-title">{{ subagentLabel(t.block) }}</div>
+                    <div class="csn-meta">
+                      <span v-if="t.block.status" class="csn-status" :class="'st-' + t.block.status">{{ t.block.status }}</span>
+                      <span v-if="t.block.tokens">↑ {{ fmtTokK(t.block.tokens) }} tok</span>
+                      <span v-if="t.block.toolUses">{{ t.block.toolUses }} 调用</span>
+                      <span v-if="fmtDuration(t.block.durationMs)">{{ fmtDuration(t.block.durationMs) }}</span>
+                      <span v-if="subagentById(t.block.agentId) && subagentById(t.block.agentId).agentType" class="csn-type">{{ subagentById(t.block.agentId).agentType }}</span>
+                    </div>
+                  </div>
+                  <span v-if="subagentById(t.block.agentId)" class="csn-go">查看 ›</span>
                 </div>
 
                 <!-- Claude 回复（对话框形式，与用户一致：头像 + 气泡） -->
@@ -2132,6 +2166,7 @@ watch(() => props.project, load)
   font-size: 12px; font-weight: 600; color: var(--k-accent);
 }
 .blk-side {
+  flex: 0 0 auto; white-space: nowrap;
   font-size: 10px; padding: 1px 6px; border-radius: 4px;
   background: var(--bg-hover); color: var(--text-tertiary); border: 1px solid var(--border-color);
 }
@@ -2753,13 +2788,25 @@ watch(() => props.project, load)
 
 /* ---- 子任务完成通知（主会话流内）---- */
 .chat-subtask-notice {
-  display: flex; align-items: center; gap: 7px;
-  margin: 6px 0; padding: 6px 12px;
-  border: 1px dashed var(--border-color); border-radius: 8px;
-  background: var(--card-bg); color: var(--text-secondary); font-size: 12.5px;
+  display: flex; align-items: center; gap: 10px;
+  margin: 8px 0; padding: 9px 12px;
+  border: 1px solid var(--border-color); border-radius: 10px;
+  background: var(--bg-hover);
 }
-.chat-subtask-notice.clickable { cursor: pointer; }
-.chat-subtask-notice.clickable:hover { border-color: var(--primary-color); color: var(--primary-color); }
-.chat-subtask-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-subtask-go { margin-left: auto; flex: 0 0 auto; font-size: 12px; }
+.chat-subtask-notice.clickable { cursor: pointer; transition: border-color 0.12s ease, background 0.12s ease; }
+.chat-subtask-notice.clickable:hover { border-color: var(--primary-color); background: var(--card-bg); }
+.csn-ico {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--primary-color); color: #fff;
+}
+.csn-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.csn-title { font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.csn-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; font-size: 11px; color: var(--text-tertiary); }
+.csn-status { padding: 0 6px; border-radius: 999px; background: rgba(127, 127, 127, 0.16); color: var(--text-secondary); text-transform: capitalize; }
+.csn-status.st-completed { background: rgba(92, 197, 133, 0.16); color: #3aa564; }
+.csn-type { padding: 0 6px; border-radius: 999px; background: rgba(127, 127, 127, 0.16); color: var(--text-secondary); }
+.csn-go { flex: 0 0 auto; align-self: center; font-size: 12px; color: var(--primary-color); }
+.ph-act-back { border-color: var(--primary-color); color: var(--primary-color); }
+.ph-act-back:hover { background: var(--primary-color); color: #fff; }
 </style>

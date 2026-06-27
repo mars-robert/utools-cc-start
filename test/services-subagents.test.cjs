@@ -48,6 +48,23 @@ test('parseSession: 含 <task-notification> 但不在开头仍按用户解析', 
   assert.equal(blocks[0].kind, 'user')
 })
 
+test('parseSession: task-notification 解析状态与用量', () => {
+  const { services } = pureEnv()
+  const notif = [
+    '<task-notification>',
+    '<task-id>abc</task-id>',
+    '<status>completed</status>',
+    '<summary>done</summary>',
+    '<usage><subagent_tokens>40479</subagent_tokens><tool_uses>10</tool_uses><duration_ms>131950</duration_ms></usage>',
+    '</task-notification>'
+  ].join('\n')
+  const { blocks } = services.parseSession(line({ type: 'user', message: { role: 'user', content: notif } }))
+  assert.equal(blocks[0].status, 'completed')
+  assert.equal(blocks[0].tokens, 40479)
+  assert.equal(blocks[0].toolUses, 10)
+  assert.equal(blocks[0].durationMs, 131950)
+})
+
 const HOME = 'C:\\Users\\tester'
 const PROJDIR = path.join(HOME, '.claude', 'projects', 'myproj')
 const SUBDIR = path.join(PROJDIR, 'sess1', 'subagents')
