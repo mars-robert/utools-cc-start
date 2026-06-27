@@ -434,6 +434,14 @@ const lineDiff = (oldStr: string, newStr: string) => {
   while (j < n) { out.push({ t: 'add', text: b[j] }); j++ }
   return out
 }
+// 按块缓存 Edit 的逐行 diff：每次重渲染（含子任务返回）不再重跑 O(m·n) LCS。
+// WeakMap 以块对象为键——主任务缓存还原后块对象不变即命中，刷新产生新块则自动重算。
+const _editDiffCache = new WeakMap<any, any>()
+const editDiff = (b: any) => {
+  let d = _editDiffCache.get(b)
+  if (!d) { d = lineDiff(b.input.old_string, b.input.new_string); _editDiffCache.set(b, d) }
+  return d
+}
 
 // ---- 工具调用的专用渲染 ----
 // 识别需要定制展示的工具类型，其余回退到通用渲染
@@ -1619,7 +1627,7 @@ watch(() => props.project, load)
                                 <span class="tool-sec-label">变更</span>
                                 <div class="diff">
                                   <div
-                                    v-for="(ln, k) in lineDiff(it.block.input.old_string, it.block.input.new_string)"
+                                    v-for="(ln, k) in editDiff(it.block)"
                                     :key="k"
                                     class="diff-line"
                                     :class="'diff-' + ln.t"
