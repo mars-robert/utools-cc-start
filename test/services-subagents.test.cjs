@@ -13,24 +13,30 @@ function pureEnv () {
   return loadPreload({ readdir: () => [], readFile: () => '', stat: () => ({ mtimeMs: 0, size: 0 }) })
 }
 
-test('parseSession: <task-notification> 识别为系统通知块而非用户', () => {
+test('parseSession: task-notification 并入对应 Agent 工具调用、不产出独立块', () => {
   const { services } = pureEnv()
   const notif = [
     '<task-notification>',
     '<task-id>a6fb3ce5f2e14c158</task-id>',
     '<tool-use-id>toolu_x</tool-use-id>',
     '<status>completed</status>',
-    '<summary>Agent "Review Task 1" finished</summary>',
-    '<result>Approved</result>',
+    '<usage><subagent_tokens>40479</subagent_tokens><tool_uses>10</tool_uses><duration_ms>131950</duration_ms></usage>',
     '</task-notification>'
   ].join('\n')
-  const jsonl = line({ type: 'user', message: { role: 'user', content: notif }, timestamp: 't1' })
+  const jsonl = [
+    line({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_x', name: 'Agent', input: { description: 'Do work' } }] } }),
+    line({ type: 'user', message: { role: 'user', content: notif }, timestamp: 't1' })
+  ].join('\n')
   const { blocks } = services.parseSession(jsonl)
+  // 通知不产出独立块，仅把结果挂到对应 Agent 工具调用的 .subtask
   assert.equal(blocks.length, 1)
-  assert.equal(blocks[0].kind, 'system')
-  assert.equal(blocks[0].subtype, 'subtask_notice')
-  assert.equal(blocks[0].agentId, 'a6fb3ce5f2e14c158')
-  assert.equal(blocks[0].text, 'Agent "Review Task 1" finished')
+  assert.equal(blocks[0].kind, 'tool_use')
+  const sub = blocks[0].subtask
+  assert.equal(sub.agentId, 'a6fb3ce5f2e14c158')
+  assert.equal(sub.status, 'completed')
+  assert.equal(sub.tokens, 40479)
+  assert.equal(sub.toolUses, 10)
+  assert.equal(sub.durationMs, 131950)
 })
 
 test('parseSession: 普通用户消息不受影响', () => {
@@ -48,21 +54,11 @@ test('parseSession: 含 <task-notification> 但不在开头仍按用户解析', 
   assert.equal(blocks[0].kind, 'user')
 })
 
-test('parseSession: task-notification 解析状态与用量', () => {
+test('parseSession: 无匹配 tool_use 的 task-notification 被丢弃', () => {
   const { services } = pureEnv()
-  const notif = [
-    '<task-notification>',
-    '<task-id>abc</task-id>',
-    '<status>completed</status>',
-    '<summary>done</summary>',
-    '<usage><subagent_tokens>40479</subagent_tokens><tool_uses>10</tool_uses><duration_ms>131950</duration_ms></usage>',
-    '</task-notification>'
-  ].join('\n')
+  const notif = '<task-notification>\n<task-id>z</task-id>\n<tool-use-id>nope</tool-use-id>\n<status>completed</status>\n</task-notification>'
   const { blocks } = services.parseSession(line({ type: 'user', message: { role: 'user', content: notif } }))
-  assert.equal(blocks[0].status, 'completed')
-  assert.equal(blocks[0].tokens, 40479)
-  assert.equal(blocks[0].toolUses, 10)
-  assert.equal(blocks[0].durationMs, 131950)
+  assert.equal(blocks.length, 0)
 })
 
 const HOME = 'C:\\Users\\tester'

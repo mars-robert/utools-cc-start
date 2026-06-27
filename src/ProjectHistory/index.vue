@@ -27,7 +27,6 @@ const currentAgent = ref<string | null>(null) // 当前视图：null=主任务 /
 const showSubtasks = ref(false)         // 切换器下拉开关
 const returnToIndex = ref<number | null>(null) // 经通知跳进子任务时记下来源块下标，用于返回定位
 const subagentById = (id: string | null) => (id ? subagents.value.find((a: any) => a.agentId === id) : null)
-const subagentLabel = (b: any) => (subagentById(b.agentId)?.description) || b.text || '子任务'
 const currentViewLabel = computed(() => (currentAgent.value ? (subagentById(currentAgent.value)?.description || currentAgent.value) : '主任务'))
 
 // 窄屏（<900px）下左侧列表收为左上角弹窗
@@ -276,8 +275,6 @@ const turns = computed(() => {
     sessionDetail.value.blocks.forEach((b: any, i: number) => {
       if (b.kind === 'user' && isInterruptOnly(b.text)) {
         out.push({ type: 'notice', block: b, index: i }); cur = null
-      } else if (b.kind === 'system' && b.subtype === 'subtask_notice') {
-        out.push({ type: 'subtask_notice', block: b, index: i }); cur = null
       } else if (b.kind === 'user') {
         out.push({ type: 'user', block: b, index: i }); cur = null
       } else {
@@ -447,6 +444,7 @@ const toolKind = (b: any) => {
   if (n === 'Read') return 'read'
   if (n === 'Grep') return 'grep'
   if (/codegraph/i.test(n)) return 'codegraph'
+  if (n === 'Agent' || n === 'Task') return 'agent'
   return ''
 }
 // Read 的读取行范围标注
@@ -1377,30 +1375,6 @@ watch(() => props.project, load)
                   <span>{{ interruptLabel(t.block.text) }}</span>
                 </div>
 
-                <!-- 子任务完成通知（系统注入，可点击跳到该子任务） -->
-                <div
-                  v-else-if="t.type === 'subtask_notice' && chipVisible('system')"
-                  :ref="(el) => setBlockRef(el, t.index)"
-                  class="chat-subtask-notice"
-                  :class="{ 'blk-flash': highlightIdx === t.index, clickable: !!subagentById(t.block.agentId) }"
-                  @click="subagentById(t.block.agentId) && switchView(t.block.agentId, t.index)"
-                >
-                  <span class="csn-ico">
-                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="18" r="2.4" /><circle cx="18" cy="12" r="2.4" /><path d="M8.2 6.6c5 .4 6.6 1.8 7.4 4.2M8.2 17.4c5-.4 6.6-1.8 7.4-4.2" /></svg>
-                  </span>
-                  <div class="csn-body">
-                    <div class="csn-title">{{ subagentLabel(t.block) }}</div>
-                    <div class="csn-meta">
-                      <span v-if="t.block.status" class="csn-status" :class="'st-' + t.block.status">{{ t.block.status }}</span>
-                      <span v-if="t.block.tokens">↑ {{ fmtTokK(t.block.tokens) }} tok</span>
-                      <span v-if="t.block.toolUses">{{ t.block.toolUses }} 调用</span>
-                      <span v-if="fmtDuration(t.block.durationMs)">{{ fmtDuration(t.block.durationMs) }}</span>
-                      <span v-if="subagentById(t.block.agentId) && subagentById(t.block.agentId).agentType" class="csn-type">{{ subagentById(t.block.agentId).agentType }}</span>
-                    </div>
-                  </div>
-                  <span v-if="subagentById(t.block.agentId)" class="csn-go">查看 ›</span>
-                </div>
-
                 <!-- Claude 回复（对话框形式，与用户一致：头像 + 气泡） -->
                 <div v-else-if="t.type === 'claude' && claudeVisible(t)" class="chat-claude">
                   <span class="chat-ava chat-ava-ai">AI</span>
@@ -1442,6 +1416,24 @@ watch(() => props.project, load)
                           <span v-else-if="it.block.kind === 'system' && sysLabel(it.block)" class="tool-line-text">· {{ sysLabel(it.block) }}</span>
                           <span v-if="it.block.sidechain" class="blk-side">子任务</span>
                           <svg v-if="(it.block.kind === 'tool_use' && toolExpandable(it.block)) || it.block.kind === 'thinking'" class="tool-caret" :class="{ open: headOpen(it) }" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></svg>
+                        </div>
+
+                        <!-- Agent 工具调用：子任务结果摘要 + 进入子任务入口（始终可见） -->
+                        <div
+                          v-if="toolKind(it.block) === 'agent' && it.block.subtask"
+                          class="agent-sub"
+                          :class="{ clickable: !!subagentById(it.block.subtask.agentId) }"
+                          @click.stop="subagentById(it.block.subtask.agentId) && switchView(it.block.subtask.agentId, it.index)"
+                        >
+                          <span class="agent-sub-arrow">↳</span>
+                          <span class="agent-sub-name">子任务：{{ (subagentById(it.block.subtask.agentId) && subagentById(it.block.subtask.agentId).description) || it.block.subtask.agentId }}</span>
+                          <span class="agent-sub-meta">
+                            <span v-if="it.block.subtask.status" class="csn-status" :class="'st-' + it.block.subtask.status">{{ it.block.subtask.status }}</span>
+                            <span v-if="it.block.subtask.tokens">↑ {{ fmtTokK(it.block.subtask.tokens) }} tok</span>
+                            <span v-if="it.block.subtask.toolUses">{{ it.block.subtask.toolUses }} 调用</span>
+                            <span v-if="fmtDuration(it.block.subtask.durationMs)">{{ fmtDuration(it.block.subtask.durationMs) }}</span>
+                          </span>
+                          <span v-if="subagentById(it.block.subtask.agentId)" class="agent-sub-go">查看 →</span>
                         </div>
 
                         <!-- 思考：默认折叠（头部一行预览），展开看全文 -->
@@ -2786,27 +2778,21 @@ watch(() => props.project, load)
   border: 1px solid var(--primary-color); color: var(--primary-color); white-space: nowrap;
 }
 
-/* ---- 子任务完成通知（主会话流内）---- */
-.chat-subtask-notice {
-  display: flex; align-items: center; gap: 10px;
-  margin: 8px 0; padding: 9px 12px;
-  border: 1px solid var(--border-color); border-radius: 10px;
-  background: var(--bg-hover);
+/* ---- Agent 工具调用：子任务结果摘要 + 进入子任务入口 ---- */
+.agent-sub {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px;
+  margin: 4px 0 2px; padding: 5px 9px;
+  border-left: 2px solid var(--primary-color); border-radius: 0 6px 6px 0;
+  background: var(--bg-hover); font-size: 11.5px; color: var(--text-secondary);
 }
-.chat-subtask-notice.clickable { cursor: pointer; transition: border-color 0.12s ease, background 0.12s ease; }
-.chat-subtask-notice.clickable:hover { border-color: var(--primary-color); background: var(--card-bg); }
-.csn-ico {
-  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 7px;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--primary-color); color: #fff;
-}
-.csn-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.csn-title { font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.csn-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; font-size: 11px; color: var(--text-tertiary); }
+.agent-sub.clickable { cursor: pointer; transition: background 0.12s ease; }
+.agent-sub.clickable:hover { background: var(--card-bg); }
+.agent-sub-arrow { flex: 0 0 auto; color: var(--primary-color); font-weight: 700; }
+.agent-sub-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); font-weight: 600; }
+.agent-sub-meta { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; color: var(--text-tertiary); }
+.agent-sub-go { flex: 0 0 auto; color: var(--primary-color); font-weight: 600; }
 .csn-status { padding: 0 6px; border-radius: 999px; background: rgba(127, 127, 127, 0.16); color: var(--text-secondary); text-transform: capitalize; }
 .csn-status.st-completed { background: rgba(92, 197, 133, 0.16); color: #3aa564; }
-.csn-type { padding: 0 6px; border-radius: 999px; background: rgba(127, 127, 127, 0.16); color: var(--text-secondary); }
-.csn-go { flex: 0 0 auto; align-self: center; font-size: 12px; color: var(--primary-color); }
 .ph-act-back { border-color: var(--primary-color); color: var(--primary-color); }
 .ph-act-back:hover { background: var(--primary-color); color: #fff; }
 </style>

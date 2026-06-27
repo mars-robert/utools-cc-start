@@ -1176,7 +1176,7 @@ function parseTaskNotification (text) {
   const num = (tag) => { const m = usage.match(new RegExp('<' + tag + '>(\\d+)</' + tag + '>')); return m ? Number(m[1]) : 0 }
   return {
     agentId: pick('task-id'),
-    summary: pick('summary') || pick('status') || '子任务事件',
+    toolUseId: pick('tool-use-id'),
     status: pick('status'),
     tokens: num('subagent_tokens'),
     toolUses: num('tool_uses'),
@@ -1246,7 +1246,12 @@ function parseSession (content) {
         : (Array.isArray(c) ? c.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n') : '')
       // 系统注入的子任务完成通知：非用户输入，作为系统提示块（带 agentId 供前端跳转）
       const notif = parseTaskNotification(rawText)
-      if (notif) { blocks.push({ kind: 'system', subtype: 'subtask_notice', text: notif.summary, agentId: notif.agentId, status: notif.status, tokens: notif.tokens, toolUses: notif.toolUses, durationMs: notif.durationMs, sidechain, ts }); meta.count++; continue }
+      if (notif) {
+        // 系统注入的子任务完成通知：并入对应 Agent 工具调用（按 tool-use-id），不产出独立块
+        const owner = notif.toolUseId ? toolUseById[notif.toolUseId] : null
+        if (owner) owner.subtask = { agentId: notif.agentId, status: notif.status, tokens: notif.tokens, toolUses: notif.toolUses, durationMs: notif.durationMs }
+        continue
+      }
       const cmd = parseCommand(rawText)
       if (cmd) { blocks.push({ kind: 'user', command: cmd, text: cmd.args || '', sidechain, ts }); meta.count++; continue }
     }
