@@ -1165,6 +1165,19 @@ function parseCommand (text) {
   return { name, args: pick('command-args'), message: pick('command-message') }
 }
 
+// 去除 ANSI SGR 颜色/样式转义序列（命令输出常含），仅用于纯文本展示
+function stripAnsi (text) {
+  return typeof text === 'string' ? text.replace(/\[[0-9;?]*[A-Za-z]/g, '') : text
+}
+
+// 解析「纯本地命令输出」用户消息（整条即 <local-command-stdout|stderr> 包裹）→ 去壳去 ANSI 文本；非此类返回 null
+function commandOutputText (text) {
+  if (typeof text !== 'string') return null
+  const m = text.trim().match(/^<local-command-(stdout|stderr)>([\s\S]*)<\/local-command-\1>$/)
+  if (!m) return null
+  return stripAnsi((m[2] || '').trim())
+}
+
 // 解析 harness 注入的 <task-notification> 消息 → { agentId, summary }；非此类返回 null
 function parseTaskNotification (text) {
   if (typeof text !== 'string' || text.replace(/^\s+/, '').indexOf('<task-notification>') !== 0) return null
@@ -1254,6 +1267,12 @@ function parseSession (content) {
       }
       const cmd = parseCommand(rawText)
       if (cmd) { blocks.push({ kind: 'user', command: cmd, text: cmd.args || '', sidechain, ts }); meta.count++; continue }
+      // 纯本地命令输出（如 /compact 钩子回显）：命令结果而非用户输入 → 作系统命令块，不当作提问
+      const out = commandOutputText(rawText)
+      if (out != null) {
+        if (out) { blocks.push({ kind: 'system', subtype: 'local_command', text: out, sidechain, ts }); meta.count++ }
+        continue
+      }
     }
     if (typeof c === 'string') {
       if (type === 'user') {

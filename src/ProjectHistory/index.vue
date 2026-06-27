@@ -171,6 +171,7 @@ const keyForBlock = (i: number) => {
   if (b.kind === 'tool_use') return 'tu' + i
   if (b.kind === 'tool_result' && big(b.text)) return 'tr' + i
   if (b.kind === 'attachment' && big(b.text)) return 'at' + i
+  if (b.kind === 'system' && b.subtype === 'local_command' && big(b.text)) return 'so' + i
   return ''
 }
 // 块的可搜文本：正文 + 命令 + 工具名/入参/结果
@@ -1698,7 +1699,11 @@ watch(() => props.project, load)
                           </template>
                         </div>
 
-                        <!-- 系统：按子类型呈现（会话回顾 Markdown / 命令输出代码块） -->
+                        <!-- 系统·命令输出（/compact 等命令回显）：代码块呈现，长输出默认折叠 -->
+                        <template v-else-if="it.block.kind === 'system' && it.block.subtype === 'local_command'">
+                          <pre v-if="!big(it.block.text) || isOpen('so' + it.index)" class="blk-pre">{{ sysText(it.block) }}</pre>
+                          <div v-if="big(it.block.text)" class="blk-toggle" @click="toggle('so' + it.index)">{{ isOpen('so' + it.index) ? '收起' : '展开全部' }}</div>
+                        </template>
                         <!-- 系统：极简朴素，一行文本 -->
                         <div v-else class="blk-sys-text">{{ sysText(it.block) }}</div>
                       </div>

@@ -109,6 +109,39 @@ test('parseSession: 识别斜杠命令用户消息', () => {
   assert.equal(blocks[1].command.args, '')
 })
 
+test('parseSession: 纯命令输出作系统命令块、去 ANSI、不当作用户提问', () => {
+  const { services } = makeEnv()
+  const stdout = '<local-command-stdout>[2mCompacted[22m\nPreCompact done</local-command-stdout>'
+  const jsonl = [
+    line({ type: 'user', message: { role: 'user', content: '<command-name>/compact</command-name>\n<command-args></command-args>' } }),
+    line({ type: 'user', message: { role: 'user', content: stdout } })
+  ].join('\n')
+  const { blocks } = services.parseSession(jsonl)
+  assert.equal(blocks.length, 2)
+  // 命令本身仍是用户命令胶囊
+  assert.equal(blocks[0].kind, 'user')
+  assert.equal(blocks[0].command.name, '/compact')
+  // 命令输出重分类为系统命令块：去壳、去 ANSI 转义
+  assert.equal(blocks[1].kind, 'system')
+  assert.equal(blocks[1].subtype, 'local_command')
+  assert.equal(blocks[1].text, 'Compacted\nPreCompact done')
+})
+
+test('parseSession: <local-command-stdout> 仅出现在文本中部时仍按用户消息', () => {
+  const { services } = makeEnv()
+  const jsonl = line({ type: 'user', message: { role: 'user', content: 'see <local-command-stdout>x</local-command-stdout> here' } })
+  const { blocks } = services.parseSession(jsonl)
+  assert.equal(blocks.length, 1)
+  assert.equal(blocks[0].kind, 'user')
+})
+
+test('parseSession: 空命令输出不产出块', () => {
+  const { services } = makeEnv()
+  const jsonl = line({ type: 'user', message: { role: 'user', content: '<local-command-stdout>   </local-command-stdout>' } })
+  const { blocks } = services.parseSession(jsonl)
+  assert.equal(blocks.length, 0)
+})
+
 test('parseSession: 未配对的 tool_result 单独成块', () => {
   const { services } = makeEnv()
   const jsonl = line({
