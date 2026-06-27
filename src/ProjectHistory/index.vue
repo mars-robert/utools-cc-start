@@ -1205,10 +1205,10 @@ watch(() => props.project, load)
               </div>
               <span class="ph-find-count">{{ findCount ? (findCurrent + 1) + '/' + findCount : '0/0' }}</span>
               <button class="ph-find-btn" title="上一个 (Shift+Enter)" :disabled="!findCount" @click="findPrev()">
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6" /></svg>
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
               </button>
               <button class="ph-find-btn" title="下一个 (Enter)" :disabled="!findCount" @click="findNext()">
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7" /></svg>
               </button>
               <button class="ph-find-btn" title="关闭 (Esc)" @click="findClose()">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
@@ -2549,8 +2549,8 @@ watch(() => props.project, load)
   position: absolute;
   top: calc(100% + 4px); right: 16px;
   z-index: 1700;
-  display: flex; align-items: center; gap: 4px;
-  padding: 4px 6px;
+  display: flex; align-items: center; gap: 1px;
+  padding: 3px 5px;
   background: var(--card-bg);
   border: 1px solid var(--border-color);
   border-radius: 8px;
@@ -2582,12 +2582,12 @@ watch(() => props.project, load)
 .ph-find-toggle:hover { color: var(--text-primary); }
 .ph-find-toggle.on { border-color: var(--primary-color); color: var(--primary-color); background: transparent; }
 .ph-find-count {
-  min-width: 44px; padding: 0 4px;
+  min-width: 34px; padding: 0 4px;
   text-align: center; font-size: 12px; color: var(--text-secondary);
   white-space: nowrap;
 }
 .ph-find-btn {
-  width: 26px; height: 24px;
+  width: 22px; height: 24px;
   display: flex; align-items: center; justify-content: center;
   border: none; border-radius: 5px;
   background: transparent; color: var(--text-secondary);
