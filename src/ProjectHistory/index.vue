@@ -1186,34 +1186,34 @@ watch(() => props.project, load)
                 </div>
               </div>
             </div>
-          </div>
-
-          <div v-if="findSupported && findVisible" class="ph-find">
-            <input
-              ref="findInput"
-              v-model="findQuery"
-              class="ph-find-input"
-              :class="{ invalid: findInvalid }"
-              type="text"
-              placeholder="查找"
-              spellcheck="false"
-              @keydown.enter.exact.prevent="findNext()"
-              @keydown.enter.shift.prevent="findPrev()"
-            />
-            <span class="ph-find-count">{{ findCount ? (findCurrent + 1) + '/' + findCount : '0/0' }}</span>
-            <button class="ph-find-btn" title="上一个 (Shift+Enter)" :disabled="!findCount" @click="findPrev()">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6" /></svg>
-            </button>
-            <button class="ph-find-btn" title="下一个 (Enter)" :disabled="!findCount" @click="findNext()">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></svg>
-            </button>
-            <span class="ph-find-sep"></span>
-            <button class="ph-find-btn ph-find-toggle" :class="{ on: findCase }" title="区分大小写" @click="findCase = !findCase">Aa</button>
-            <button class="ph-find-btn ph-find-toggle" :class="{ on: findWord }" title="全字匹配" @click="findWord = !findWord">&#9474;ab&#9474;</button>
-            <button class="ph-find-btn ph-find-toggle" :class="{ on: findRegex }" title="正则表达式" @click="findRegex = !findRegex">.*</button>
-            <button class="ph-find-btn" title="关闭 (Esc)" @click="findClose()">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
-            </button>
+            <!-- 查找框：浮于筛选条/搜索按钮下方（VS Code 风格） -->
+            <div v-if="findSupported && findVisible" class="ph-find">
+              <div class="ph-find-box" :class="{ invalid: findInvalid }">
+                <input
+                  ref="findInput"
+                  v-model="findQuery"
+                  class="ph-find-input"
+                  type="text"
+                  placeholder="查找"
+                  spellcheck="false"
+                  @keydown.enter.exact.prevent="findNext()"
+                  @keydown.enter.shift.prevent="findPrev()"
+                />
+                <button class="ph-find-toggle" :class="{ on: findCase }" title="区分大小写" @click="findCase = !findCase">Aa</button>
+                <button class="ph-find-toggle" :class="{ on: findWord }" title="全字匹配" @click="findWord = !findWord">&#9474;ab&#9474;</button>
+                <button class="ph-find-toggle" :class="{ on: findRegex }" title="正则表达式" @click="findRegex = !findRegex">.*</button>
+              </div>
+              <span class="ph-find-count">{{ findCount ? (findCurrent + 1) + '/' + findCount : '0/0' }}</span>
+              <button class="ph-find-btn" title="上一个 (Shift+Enter)" :disabled="!findCount" @click="findPrev()">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6" /></svg>
+              </button>
+              <button class="ph-find-btn" title="下一个 (Enter)" :disabled="!findCount" @click="findNext()">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+              </button>
+              <button class="ph-find-btn" title="关闭 (Esc)" @click="findClose()">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+              </button>
+            </div>
           </div>
 
           <div ref="scrollEl" class="ph-detail-scroll" @scroll="onDetailScroll">
@@ -2547,30 +2547,45 @@ watch(() => props.project, load)
 /* ---- 页内查找浮层 ---- */
 .ph-find {
   position: absolute;
-  top: 8px; right: 18px;
+  top: calc(100% + 4px); right: 16px;
   z-index: 1700;
-  display: flex; align-items: center; gap: 2px;
+  display: flex; align-items: center; gap: 4px;
   padding: 4px 6px;
   background: var(--card-bg);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
 }
-.ph-find-input {
-  width: 180px; height: 26px;
-  padding: 0 8px;
+/* 输入框 + 内嵌大小写/全字/正则开关，整体视作一个搜索框 */
+.ph-find-box {
+  display: flex; align-items: center; gap: 2px;
+  height: 28px; padding: 0 4px 0 8px;
   border: 1px solid var(--border-color); border-radius: 6px;
-  background: var(--card-bg); color: var(--text-primary);
+  background: var(--card-bg);
+}
+.ph-find-box:focus-within { border-color: var(--primary-color); }
+.ph-find-box.invalid { border-color: #e5534b; }
+.ph-find-input {
+  width: 160px; height: 24px;
+  border: none; background: transparent; color: var(--text-primary);
   font-size: 13px; outline: none;
 }
-.ph-find-input:focus { border-color: var(--primary-color); }
-.ph-find-input.invalid { border-color: #e5534b; }
+/* 筛选开关：选中态为描边、无底色 */
+.ph-find-toggle {
+  width: 24px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: 4px;
+  background: transparent; color: var(--text-secondary);
+  font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.ph-find-toggle:hover { color: var(--text-primary); }
+.ph-find-toggle.on { border-color: var(--primary-color); color: var(--primary-color); background: transparent; }
 .ph-find-count {
   min-width: 44px; padding: 0 4px;
   text-align: center; font-size: 12px; color: var(--text-secondary);
   white-space: nowrap;
 }
-.ph-find-sep { width: 1px; height: 18px; margin: 0 2px; background: var(--border-color); }
 .ph-find-btn {
   width: 26px; height: 24px;
   display: flex; align-items: center; justify-content: center;
@@ -2581,8 +2596,6 @@ watch(() => props.project, load)
 }
 .ph-find-btn:hover:not(:disabled) { background: var(--primary-color); color: #fff; }
 .ph-find-btn:disabled { opacity: 0.4; cursor: default; }
-.ph-find-toggle { font-weight: 600; }
-.ph-find-toggle.on { background: var(--primary-color); color: #fff; }
 
 /* ---- 查找命中高亮（CSS Custom Highlight API）---- */
 ::highlight(ph-find) { background-color: rgba(250, 204, 21, 0.45); }
