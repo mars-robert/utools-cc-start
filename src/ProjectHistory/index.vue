@@ -21,6 +21,14 @@ const sessionDetail = ref<{ blocks: any[]; meta: any } | null>(null)
 const selectedSession = ref<any>(null)
 const detailLoading = ref(false)
 
+// ---- 子任务（子代理）查看与切换 ----
+const subagents = ref<any[]>([])        // 当前会话的子任务列表
+const currentAgent = ref<string | null>(null) // 当前视图：null=主任务 / agentId=某子任务
+const showSubtasks = ref(false)         // 切换器下拉开关
+const subagentById = (id: string | null) => (id ? subagents.value.find((a: any) => a.agentId === id) : null)
+const subagentLabel = (b: any) => (subagentById(b.agentId)?.description) || b.text || '子任务'
+const currentViewLabel = computed(() => (currentAgent.value ? (subagentById(currentAgent.value)?.description || currentAgent.value) : '主任务'))
+
 // 窄屏（<900px）下左侧列表收为左上角弹窗
 const narrow = ref(false)
 const showList = ref(false)
@@ -258,6 +266,8 @@ const turns = computed(() => {
     sessionDetail.value.blocks.forEach((b: any, i: number) => {
       if (b.kind === 'user' && isInterruptOnly(b.text)) {
         out.push({ type: 'notice', block: b, index: i }); cur = null
+      } else if (b.kind === 'system' && b.subtype === 'subtask_notice') {
+        out.push({ type: 'subtask_notice', block: b, index: i }); cur = null
       } else if (b.kind === 'user') {
         out.push({ type: 'user', block: b, index: i }); cur = null
       } else {
@@ -698,6 +708,9 @@ const selectMemory = (m: any) => {
   showList.value = false
   stopPoll()
   findClose()
+  currentAgent.value = null
+  subagents.value = []
+  showSubtasks.value = false
   mdCache.clear()
   selected.value = { type: 'memory', id: m.fileName }
   sessionDetail.value = null
@@ -712,6 +725,9 @@ const selectSession = (s: any) => {
   selectedSession.value = s
   detailLoading.value = true
   showQuestions.value = false
+  currentAgent.value = null
+  showSubtasks.value = false
+  subagents.value = []
   findClose()
   showJumpBottom.value = false
   hasNew.value = false
@@ -726,6 +742,7 @@ const selectSession = (s: any) => {
   setTimeout(() => {
     try {
       sessionDetail.value = window.services.readSession(props.project.dirName, s.sessionId)
+      subagents.value = window.services.listSubagents(props.project.dirName, s.sessionId) || []
       lastSig = sessionSig(s)
     } catch (err: any) {
       error.value = err && err.message ? err.message : String(err)
@@ -743,6 +760,50 @@ const selectSession = (s: any) => {
       })
     }
   }, 0)
+}
+
+// 在主任务/子任务间切换：仅替换 sessionDetail，复用全部既有渲染
+const switchView = (agentId: string | null) => {
+  if (!selectedSession.value) return
+  showSubtasks.value = false
+  if (currentAgent.value === agentId) return
+  currentAgent.value = agentId
+  findClose()
+  showQuestions.value = false
+  showJumpBottom.value = false
+  hasNew.value = false
+  newCount.value = 0
+  curQ.value = 0
+  highlightIdx.value = -1
+  resetFilters()
+  stopPoll()
+  mdCache.clear()
+  for (const k in blockEls) delete blockEls[k]
+  const dn = props.project.dirName
+  const sid = selectedSession.value.sessionId
+  try {
+    sessionDetail.value = agentId
+      ? window.services.readSubagent(dn, sid, agentId)
+      : window.services.readSession(dn, sid)
+  } catch (err: any) {
+    error.value = err && err.message ? err.message : String(err)
+  }
+  if (agentId) {
+    // 子任务为静态记录：不轮询、不显示在线
+    currentLive.value = false
+    autoRefresh.value = false
+  } else {
+    lastSig = sessionSig(selectedSession.value)
+    currentLive.value = isSessionLive(sid)
+    autoRefresh.value = currentLive.value
+    startPoll()
+  }
+  nextTick(() => {
+    const el = scrollEl.value
+    if (el) el.scrollTop = 0
+    updateJumpBtn()
+    seenQCount = userQuestions.value.length
+  })
 }
 
 const selectItem = (item: any) => {
@@ -819,7 +880,14 @@ const doExportMd = () => {
     filters: [{ name: 'Markdown', extensions: ['md'] }]
   })
   if (!target) return
-  const r = window.services.exportSessionToFile(props.project.dirName, selectedSession.value.sessionId, target)
+  let r
+  if (currentAgent.value) {
+    // 子任务：从已加载模型生成 Markdown
+    const md = window.services.sessionToMarkdown(sessionDetail.value, currentAgent.value)
+    r = window.services.writeTextFile(target, md)
+  } else {
+    r = window.services.exportSessionToFile(props.project.dirName, selectedSession.value.sessionId, target)
+  }
   if (r && r.success) showToast('已导出 Markdown')
   else error.value = (r && r.error) || '导出失败'
 }
@@ -1089,7 +1157,8 @@ watch(() => props.project, load)
             <div class="ph-detail-titlewrap">
               <div class="ph-detail-title">
                 <span class="ph-detail-title-text">{{ selectedSession && (selectedSession.title || selectedSession.sessionId) }}</span>
-                <span v-if="currentLive" class="ph-online-chip" title="该会话当前在终端中打开并在线">● 在线</span>
+                <span v-if="currentAgent" class="ph-subtask-badge" :title="'子任务：' + currentViewLabel">子任务 · {{ currentViewLabel }}</span>
+                <span v-if="currentLive && !currentAgent" class="ph-online-chip" title="该会话当前在终端中打开并在线">● 在线</span>
               </div>
               <div v-if="sessionDetail && sessionDetail.meta" class="ph-detail-meta">
                 <span v-if="sessionDetail.meta.gitBranch">⎇ {{ sessionDetail.meta.gitBranch }}</span>
@@ -1135,6 +1204,34 @@ watch(() => props.project, load)
           </div>
 
           <div v-if="sessionDetail && filterChips.length" class="ph-filterbar">
+            <!-- 子任务切换器：仅当前会话存在子任务时显示，置于最左 -->
+            <div v-if="subagents.length" class="ph-subtask-wrap">
+              <button class="ph-subtask-btn" :class="{ on: showSubtasks }" :title="'子任务切换（' + subagents.length + '）'" @click="showSubtasks = !showSubtasks">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="18" r="2.4" /><circle cx="18" cy="12" r="2.4" /><path d="M8.2 6.6c5 .4 6.6 1.8 7.4 4.2M8.2 17.4c5-.4 6.6-1.8 7.4-4.2" /></svg>
+                <span class="ph-subtask-cur">{{ currentViewLabel }}</span>
+                <svg class="ph-subtask-caret" :class="{ open: showSubtasks }" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+              </button>
+              <div v-if="showSubtasks" class="ph-subtask-backdrop" @click="showSubtasks = false"></div>
+              <div class="ph-subtask-panel" :class="{ open: showSubtasks }">
+                <div class="ph-subtask-item" :class="{ active: currentAgent === null }" @click="switchView(null)">
+                  <span class="ph-subtask-main">主任务</span>
+                  <span class="ph-subtask-mainsub">{{ selectedSession && (selectedSession.title || selectedSession.sessionId) }}</span>
+                </div>
+                <div
+                  v-for="a in subagents"
+                  :key="a.agentId"
+                  class="ph-subtask-item"
+                  :class="{ active: currentAgent === a.agentId }"
+                  @click="switchView(a.agentId)"
+                >
+                  <div class="ph-subtask-row">
+                    <span class="ph-subtask-desc">{{ a.description || a.agentId }}</span>
+                    <span v-if="a.agentType" class="ph-subtask-type">{{ a.agentType }}</span>
+                  </div>
+                  <span v-if="formatTime(a.mtime)" class="ph-subtask-time">{{ formatTime(a.mtime) }}</span>
+                </div>
+              </div>
+            </div>
             <div class="ph-chips">
               <button
                 v-for="k in filterChips"
@@ -1254,6 +1351,19 @@ watch(() => props.project, load)
                 >
                   <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><path d="m5.6 5.6 12.8 12.8" /></svg>
                   <span>{{ interruptLabel(t.block.text) }}</span>
+                </div>
+
+                <!-- 子任务完成通知（系统注入，可点击跳到该子任务） -->
+                <div
+                  v-else-if="t.type === 'subtask_notice' && chipVisible('system')"
+                  :ref="(el) => setBlockRef(el, t.index)"
+                  class="chat-subtask-notice"
+                  :class="{ 'blk-flash': highlightIdx === t.index, clickable: !!subagentById(t.block.agentId) }"
+                  @click="subagentById(t.block.agentId) && switchView(t.block.agentId)"
+                >
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.7 21a2 2 0 0 1-3.4 0" /></svg>
+                  <span class="chat-subtask-text">子任务：{{ subagentLabel(t.block) }}</span>
+                  <span v-if="subagentById(t.block.agentId)" class="chat-subtask-go">查看 ›</span>
                 </div>
 
                 <!-- Claude 回复（对话框形式，与用户一致：头像 + 气泡） -->
@@ -2602,4 +2712,53 @@ watch(() => props.project, load)
    当前焦点用亮黄最醒目；其它命中用青色冷色，避免与橙色的「工具调用」强调色撞色。 */
 ::highlight(ph-find) { background-color: #22d3ee; color: #0a2b33; }
 ::highlight(ph-find-current) { background-color: #ffe100; color: #000; }
+
+/* ---- 子任务切换器 ---- */
+.ph-subtask-wrap { position: relative; flex: 0 0 auto; }
+.ph-subtask-btn {
+  display: flex; align-items: center; gap: 5px;
+  height: 28px; max-width: 220px; padding: 0 8px;
+  border: 1px solid var(--border-color); border-radius: 8px;
+  background: var(--card-bg); color: var(--text-secondary);
+  font-size: 12px; cursor: pointer;
+}
+.ph-subtask-btn:hover, .ph-subtask-btn.on { border-color: var(--primary-color); color: var(--primary-color); }
+.ph-subtask-cur { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-subtask-caret { transition: transform 0.15s ease; }
+.ph-subtask-caret.open { transform: rotate(180deg); }
+.ph-subtask-backdrop { position: fixed; inset: 0; z-index: 1500; }
+.ph-subtask-panel {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 1600;
+  width: 320px; max-height: 60vh; overflow-y: auto;
+  display: none; flex-direction: column;
+  background: var(--card-bg); border: 1px solid var(--border-color);
+  border-radius: 10px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18); padding: 6px;
+}
+.ph-subtask-panel.open { display: flex; }
+.ph-subtask-item { display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; border-radius: 7px; cursor: pointer; }
+.ph-subtask-item:hover { background: var(--hover-bg, rgba(127, 127, 127, 0.12)); }
+.ph-subtask-item.active { background: var(--primary-color); color: #fff; }
+.ph-subtask-item.active .ph-subtask-mainsub, .ph-subtask-item.active .ph-subtask-type, .ph-subtask-item.active .ph-subtask-time { color: rgba(255, 255, 255, 0.8); }
+.ph-subtask-main { font-weight: 600; font-size: 13px; }
+.ph-subtask-mainsub { font-size: 11px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-subtask-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ph-subtask-desc { flex: 1 1 auto; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ph-subtask-type { flex: 0 0 auto; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: rgba(127, 127, 127, 0.16); color: var(--text-secondary); }
+.ph-subtask-time { font-size: 11px; color: var(--text-tertiary); }
+.ph-subtask-badge {
+  flex: 0 0 auto; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid var(--primary-color); color: var(--primary-color); white-space: nowrap;
+}
+
+/* ---- 子任务完成通知（主会话流内）---- */
+.chat-subtask-notice {
+  display: flex; align-items: center; gap: 7px;
+  margin: 6px 0; padding: 6px 12px;
+  border: 1px dashed var(--border-color); border-radius: 8px;
+  background: var(--card-bg); color: var(--text-secondary); font-size: 12.5px;
+}
+.chat-subtask-notice.clickable { cursor: pointer; }
+.chat-subtask-notice.clickable:hover { border-color: var(--primary-color); color: var(--primary-color); }
+.chat-subtask-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-subtask-go { margin-left: auto; flex: 0 0 auto; font-size: 12px; }
 </style>
