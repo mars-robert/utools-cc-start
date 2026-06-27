@@ -2597,7 +2597,9 @@ watch(() => props.project, load)
 .ph-find-btn:hover:not(:disabled) { background: var(--primary-color); color: #fff; }
 .ph-find-btn:disabled { opacity: 0.4; cursor: default; }
 
-/* ---- 查找命中高亮（CSS Custom Highlight API）---- */
-::highlight(ph-find) { background-color: rgba(250, 204, 21, 0.45); }
-::highlight(ph-find-current) { background-color: rgba(249, 115, 22, 0.9); color: #1a1a1a; }
+/* ---- 查找命中高亮（CSS Custom Highlight API）----
+   用不透明背景 + 固定文字色，避免半透明在复杂代码/diff 底色上混色发灰看不清。
+   当前焦点用亮黄最醒目，其它命中用橙色作次级区分。 */
+::highlight(ph-find) { background-color: #ff9e42; color: #1a1a1a; }
+::highlight(ph-find-current) { background-color: #ffe100; color: #000; }
 </style>
