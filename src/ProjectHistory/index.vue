@@ -575,7 +575,7 @@ const isMarkdownPath = (p: any) => typeof p === 'string' && /\.(md|markdown)$/i.
 // ---- 系统消息 ----
 const SYS_LABEL: Record<string, string> = {
   away_summary: '会话回顾',
-  local_command: '命令',
+  local_command: '命令输出',
   compact_boundary: '上下文压缩',
   api_error: '接口错误'
 }
