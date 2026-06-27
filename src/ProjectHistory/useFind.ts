@@ -55,14 +55,29 @@ export function useFind (host: FindHost) {
     }
   }
 
+  // 把当前命中滚入可见区：从命中所在元素到详情容器，逐级滚动每个「带自身滚动条」的祖先
+  // （从内到外、每步重新测量）。这样命中即便藏在折叠 <pre> 的内部滚动条里也会被滚到可见处，
+  // 而不只是滚动最外层详情容器。
   const scrollToCurrent = () => {
     const root = host.scrollEl.value
     const r = ranges[current.value]
     if (!root || !r) return
-    const rect = r.getBoundingClientRect()
-    if (!rect.height && !rect.width) return
-    const c = root.getBoundingClientRect()
-    root.scrollTop += (rect.top - c.top) - (c.height - rect.height) / 2
+    const sc = r.startContainer
+    let el = (sc.nodeType === 3 ? sc.parentElement : sc) as HTMLElement | null
+    const scrollers: HTMLElement[] = []
+    while (el) {
+      if (el === root) { scrollers.push(el); break }
+      const oy = getComputedStyle(el).overflowY
+      if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 1) scrollers.push(el)
+      el = el.parentElement
+    }
+    // 从内到外依次居中：滚动内层会改变命中的视口位置，故每个滚动容器前都重新测量
+    for (const s of scrollers) {
+      const rect = r.getBoundingClientRect()
+      if (!rect.height && !rect.width) continue
+      const sRect = s.getBoundingClientRect()
+      s.scrollTop += (rect.top - sRect.top) - (s.clientHeight - rect.height) / 2
+    }
   }
 
   const run = async () => {
