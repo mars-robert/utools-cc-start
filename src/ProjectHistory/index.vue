@@ -113,7 +113,7 @@ const jumpToQuestion = (n: number) => {
   const qs = userQuestions.value
   if (!qs.length) return
   curQ.value = (n + qs.length) % qs.length
-  jumpToBlock(qs[curQ.value].index)
+  jumpToBlock(qs[curQ.value].index, false) // 瞬时跳转：平滑滚动期间易被 scrollspy 抢序号，连点尤甚
 }
 const openQuestion = (q: any, n: number) => {
   curQ.value = n
@@ -2263,6 +2263,12 @@ watch(() => props.project, load)
 
 /* ===== 对话模式：用户卡片 + Claude 大卡片 ===== */
 .ph-chat { display: flex; flex-direction: column; gap: 16px; }
+/* 长会话滚动优化：让浏览器跳过视口外内容的布局/绘制，长页滚动开销骤降。
+   contain-intrinsic-size 用 auto 关键字记住真实尺寸，滚动过一遍后高度即准确、滚动条稳定。 */
+.chat-user, .chat-claude, .sub, .sub-text {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
+}
 .chat-ava {
   flex: 0 0 auto;
   width: 28px; height: 28px; border-radius: 8px;
