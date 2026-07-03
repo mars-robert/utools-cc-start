@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { marked } from 'marked'
 import { useFind } from './useFind'
+import { SKINS, isKnownSkin } from '../theme-skins'
 
 const props = defineProps<{
   project: any
@@ -1086,16 +1087,38 @@ const onKeydown = (e: KeyboardEvent) => {
   }
 }
 
+// ---- 阅读皮肤：会话详情换肤（作用域 .ph-right），持久化于 services 独立键 ----
+const skin = ref<string>((window.services.getReadingSkin && window.services.getReadingSkin()) || 'system')
+const showTheme = ref(false)
+const setSkin = (id: string) => {
+  if (!isKnownSkin(id)) return
+  skin.value = id
+  if (window.services.setReadingSkin) window.services.setReadingSkin(id)
+  showTheme.value = false
+}
+// 系统明暗：驱动「跟随系统」预览行实时翻转
+const osDark = ref(false)
+let mqlDark: MediaQueryList | null = null
+const onOsScheme = (e: MediaQueryListEvent) => { osDark.value = e.matches }
+// 预览行的 data-theme：system 行按当前系统明暗映射为 light/dark，其余即自身
+const previewTheme = (id: string) => (id === 'system' ? (osDark.value ? 'dark' : 'light') : id)
+const skinLabel = (s: { id: string; name: string }) =>
+  (s.id === 'system' ? `${s.name}（当前：${osDark.value ? '深色' : '浅色'}）` : s.name)
+
 onMounted(() => {
   updateNarrow()
   load()
   liveTimer = window.setInterval(refreshActive, LIVE_MS)
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('resize', onResize)
+  mqlDark = window.matchMedia('(prefers-color-scheme: dark)')
+  osDark.value = mqlDark.matches
+  mqlDark.addEventListener('change', onOsScheme)
 })
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('resize', onResize)
+  if (mqlDark) mqlDark.removeEventListener('change', onOsScheme)
   stopPoll(); stopLiveTimer()
   findClose()
 })
@@ -1199,8 +1222,8 @@ watch(() => props.project, load)
         </div>
       </aside>
 
-      <!-- 右侧详情 -->
-      <section class="ph-right">
+      <!-- 右侧详情（阅读皮肤作用域：data-theme 驱动换肤；system 不设属性 → 继承 :root/@media） -->
+      <section class="ph-right" :data-theme="skin === 'system' ? null : skin">
         <div v-if="!selected" class="ph-empty-detail">
           <svg viewBox="0 0 24 24" width="46" height="46" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M22 12h-6l-2 3h-4l-2-3H2" />
@@ -1348,6 +1371,31 @@ watch(() => props.project, load)
               <button class="ph-qbtn" title="下一个提问" @click="jumpToQuestion(curQ + 1)">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></svg>
               </button>
+            </div>
+
+            <!-- 阅读主题切换：配色预览下拉（作用于 .ph-right） -->
+            <div class="ph-theme-wrap">
+              <button class="ph-act-icon ph-theme-btn" :class="{ on: showTheme }" title="阅读主题" @click="showTheme = !showTheme">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="1.4" /><circle cx="17.5" cy="10.5" r="1.4" /><circle cx="8.5" cy="7.5" r="1.4" /><circle cx="6.5" cy="12.5" r="1.4" /><path d="M12 2C6.5 2 2 6 2 11.5S6 21 11 21a2 2 0 0 0 1.8-2.9c-.3-.6-.2-1.4.3-1.9.4-.4 1-.5 1.6-.5H17a4 4 0 0 0 4-4C21 6.5 17 2 12 2z" /></svg>
+              </button>
+              <div v-if="showTheme" class="ph-theme-backdrop" @click="showTheme = false"></div>
+              <div v-if="showTheme" class="ph-theme-menu">
+                <button
+                  v-for="s in SKINS"
+                  :key="s.id"
+                  class="ph-theme-row"
+                  :class="{ active: skin === s.id }"
+                  @click="setSkin(s.id)"
+                >
+                  <span class="ph-theme-mini" :data-theme="previewTheme(s.id)">
+                    <span class="ph-theme-mini-u"></span>
+                    <span class="ph-theme-mini-a"></span>
+                    <span class="ph-theme-mini-dot"></span>
+                  </span>
+                  <span class="ph-theme-name">{{ skinLabel(s) }}</span>
+                  <svg v-if="skin === s.id" class="ph-theme-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                </button>
+              </div>
             </div>
 
             <div v-if="showQuestions" class="ph-qbackdrop" @click="showQuestions = false"></div>
@@ -1976,7 +2024,8 @@ watch(() => props.project, load)
 .ph-tag[data-type="reference"] { background: #f0e2fd; color: #7c39c4; }
 
 /* ===== 右侧详情 ===== */
-.ph-right { grid-column: 2; min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+/* 显式基线文字色：否则 OS 暗色下 body{color:#fff} 会被子孙继承，浅色皮肤下白字白底不可见 */
+.ph-right { grid-column: 2; min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; position: relative; color: var(--text-primary); }
 .ph-placeholder { margin: 60px auto 0; text-align: center; color: var(--text-tertiary); font-size: 14px; }
 /* 未选择时的空状态：居中图标 + 提示 */
 .ph-empty-detail {
@@ -2069,7 +2118,7 @@ watch(() => props.project, load)
   color: var(--text-primary);
 }
 .ph-qitem:hover { background: var(--bg-hover); }
-.ph-qitem.active { background: #eef4ff; }
+.ph-qitem.active { background: var(--primary-soft); }
 .ph-qnum {
   flex: 0 0 auto;
   min-width: 18px; height: 18px; padding: 0 4px;
@@ -2121,10 +2170,10 @@ watch(() => props.project, load)
   font-size: 11px; cursor: pointer; transition: all 0.15s ease;
 }
 .ph-act-live:hover { background: var(--bg-hover); }
-.ph-act-live.on { color: #20bf6b; border-color: rgba(32, 191, 107, 0.5); }
-.ph-online-chip { flex: 0 0 auto; display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; color: #20bf6b; white-space: nowrap; }
+.ph-act-live.on { color: var(--success-color); border-color: rgba(32, 191, 107, 0.5); }
+.ph-online-chip { flex: 0 0 auto; display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; color: var(--success-color); white-space: nowrap; }
 .ph-live-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--text-tertiary); }
-.ph-act-live.on .ph-live-dot { background: #20bf6b; animation: ph-live-pulse 1.6s ease-in-out infinite; }
+.ph-act-live.on .ph-live-dot { background: var(--success-color); animation: ph-live-pulse 1.6s ease-in-out infinite; }
 @keyframes ph-live-pulse {
   0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(32, 191, 107, 0.5); }
   50% { opacity: 0.55; box-shadow: 0 0 0 4px rgba(32, 191, 107, 0); }
@@ -2138,7 +2187,7 @@ watch(() => props.project, load)
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 14px;
   border: 1px solid var(--border-color); border-radius: 999px; cursor: pointer;
-  background: rgba(255, 255, 255, 0.6);
+  background: var(--glass-bg);
   -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
   color: var(--text-secondary);
   font-size: 12.5px; line-height: 1; white-space: nowrap;
@@ -2153,7 +2202,7 @@ watch(() => props.project, load)
 /* 有新消息：绿色高亮 + 轻微脉冲 */
 .ph-jump-bottom.has-new {
   border-color: transparent;
-  background: #22c55e; color: #fff;
+  background: var(--success-color); color: #fff;
   box-shadow: 0 4px 14px rgba(34, 197, 94, 0.38);
   animation: ph-jump-pulse 1.8s ease-in-out infinite;
 }
@@ -2167,6 +2216,42 @@ watch(() => props.project, load)
 }
 
 /* 导出浮动下拉 */
+/* ===== 阅读主题下拉（配色预览行） ===== */
+.ph-theme-wrap { position: relative; flex: 0 0 auto; }
+/* 与左侧上下提问按钮 .ph-qnav（24px 内容 + 1px×2 边框 = 26px）等高、同圆角 */
+.ph-theme-btn { height: 26px; box-sizing: border-box; border-radius: 8px; }
+.ph-theme-backdrop { position: fixed; inset: 0; z-index: 1500; }
+.ph-theme-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 1600;
+  min-width: 196px;
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 5px;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.ph-theme-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 5px 7px; border: none; border-radius: 7px;
+  background: transparent; color: var(--text-primary);
+  font-size: 13px; text-align: left; cursor: pointer;
+}
+.ph-theme-row:hover { background: var(--bg-hover); }
+.ph-theme-row.active { background: var(--primary-soft); }
+.ph-theme-name { flex: 1 1 auto; white-space: nowrap; }
+.ph-theme-check { flex: 0 0 auto; color: var(--primary-color); }
+/* 迷你预览：自带 data-theme → 复用同一套种子/派生变量渲染真实配色 */
+.ph-theme-mini {
+  flex: 0 0 auto; position: relative;
+  width: 46px; height: 30px; border-radius: 5px; overflow: hidden;
+  background: var(--page-bg, var(--card-bg));
+  border: 1px solid var(--border-color);
+}
+.ph-theme-mini-u { position: absolute; left: 4px; top: 5px; width: 22px; height: 5px; border-radius: 3px; background: var(--ububble-bg); border: 1px solid var(--ububble-border); }
+.ph-theme-mini-a { position: absolute; left: 4px; top: 14px; width: 30px; height: 5px; border-radius: 3px; background: var(--card-bg); border: 1px solid var(--border-color); }
+.ph-theme-mini-dot { position: absolute; right: 4px; bottom: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--primary-color); }
+
 .ph-export-wrap { position: relative; flex: 0 0 auto; }
 .ph-export-caret { transition: transform 0.15s ease; }
 .ph-export-caret.open { transform: rotate(180deg); }
@@ -2198,6 +2283,66 @@ watch(() => props.project, load)
 /* 滚动内容区 */
 .ph-detail-scroll { flex: 1 1 auto; overflow-y: auto; padding: 14px 16px; }
 
+/* ============================================================
+   阅读皮肤（作用域 .ph-right）：种子 + color-mix 派生层
+   - 种子 = 一组实色；其余 tint 一律从 --card-bg 派生，浅/深皮肤共用同一公式。
+   - 「跟随系统」不设 data-theme → 继承 :root + @media；命名皮肤对 OS 暗色绝对优先。
+   - 属性选择器同时作用于真实面板与下拉里的迷你预览 mock（单一来源，预览不漂移）。
+   ============================================================ */
+/* 身份色（用户蓝 / 助手绿）固定，与「用户」「助手」筛选胶囊一致，不随皮肤改色；
+   状态色（success/error/warn）为基础浅色种子，命名皮肤与 @media 暗色再各自微调 */
+.ph-right {
+  --user-color: #4f8cff;
+  --ai-color: #20bf6b;
+  --success-color: #20bf6b;
+  --error-color: #e53935;
+  --warn-color: #fa8231;
+  /* 用户气泡（浅色系默认）：固定浅蓝底 + 蓝边 + 深字。
+     用字面量 hex 而非 color-mix——旧版 Chromium(<111) 不支持 color-mix，会导致背景/边框解析失败而消失。
+     深色皮肤另设深蓝底浅字（见 @media 与下方 dark/ocean 覆盖） */
+  --ububble-bg: #e4edfd;
+  --ububble-border: #a8c5f4;
+  --ububble-fg: var(--text-primary);
+}
+/* 跟随系统·深：仅补强调色种子暗色版（中性色由全局 @media :root 提供） */
+@media (prefers-color-scheme: dark) {
+  .ph-right:not([data-theme]) {
+    /* user/ai 身份色不随系统明暗改变（与筛选胶囊一致），此处仅补状态色暗色版 */
+    --success-color: #5fcf8d;
+    --error-color: #ff6b66;
+    --warn-color: #e0a153;
+    /* 跟随系统·深：用户气泡用深蓝底浅字 */
+    --ububble-bg: #343e4f;
+    --ububble-border: #3c5584;
+    --ububble-fg: #e8edf6;
+  }
+}
+/* 派生层：真实面板（含 system 无属性态）与任意带 data-theme 的元素（含 mock）共用 */
+.ph-right,
+.ph [data-theme] {
+  /* 半透明 rgba 叠在主题 card-bg 上，浅/深皮肤自适应；不用 color-mix 以兼容旧 Chromium(<111) */
+  --diff-add-bg: rgba(32, 191, 107, 0.16);
+  --diff-del-bg: rgba(229, 57, 53, 0.12);
+  --code-inline-bg: rgba(128, 128, 128, 0.14);
+  --code-inline-fg: var(--text-primary);
+  --table-stripe: rgba(128, 128, 128, 0.07);
+  --primary-soft: rgba(127, 127, 127, 0.16);
+  --error-bg: rgba(229, 57, 53, 0.12);
+  --error-border: rgba(229, 57, 53, 0.45);
+  --glass-bg: rgba(127, 127, 127, 0.28);
+}
+/* k 类型 tint：见各 .k-* 行（accent + 半透明 rgba，叠在主题卡片上自适应明暗） */
+
+/* 5 套命名皮肤：各声明 13 个种子；同时作用于面板与预览 mock */
+.ph-right[data-theme] { background: var(--page-bg); }
+.ph [data-theme="light"]  { --page-bg:#ffffff; --card-bg:#ffffff; --text-primary:#333333; --text-secondary:#666666; --text-tertiary:#999999; --border-color:#e0e0e0; --bg-hover:#f5f5f5; --primary-color:#4f8cff; --success-color:#20bf6b; --error-color:#e53935; --warn-color:#fa8231; }
+.ph [data-theme="dark"]   { --page-bg:#1e1f23; --card-bg:#2a2a2a; --text-primary:#e0e0e0; --text-secondary:#aaaaaa; --text-tertiary:#888888; --border-color:#3a3a3a; --bg-hover:#333333; --primary-color:#5b9cff; --success-color:#5fcf8d; --error-color:#ff6b66; --warn-color:#e0a153; }
+.ph [data-theme="sepia"]  { --page-bg:#f1e7d0; --card-bg:#faf3e3; --text-primary:#5b4636; --text-secondary:#7a6552; --text-tertiary:#a08c75; --border-color:#e3d4b5; --bg-hover:#efe4cb; --primary-color:#b6794a; --success-color:#4f7a4f; --error-color:#b5443a; --warn-color:#c2792a; }
+.ph [data-theme="ocean"]  { --page-bg:#0e2230; --card-bg:#143042; --text-primary:#cfe6e3; --text-secondary:#93b8bb; --text-tertiary:#6b8f93; --border-color:#234a55; --bg-hover:#1b3c49; --primary-color:#2bb3c0; --success-color:#45c8b0; --error-color:#ef6f6f; --warn-color:#e0a153; }
+.ph [data-theme="forest"] { --page-bg:#e9f0e5; --card-bg:#f6faf4; --text-primary:#2f3a2f; --text-secondary:#54614f; --text-tertiary:#859184; --border-color:#d6e0d0; --bg-hover:#e4ece0; --primary-color:#3f7d52; --success-color:#2f7d52; --error-color:#b5443a; --warn-color:#c2792a; }
+/* 深色皮肤：用户气泡用指定深蓝底浅字（#343E4F/#3C5584）；浅色皮肤(light/sepia/forest)继承基础自适应浅蓝 */
+.ph [data-theme="dark"], .ph [data-theme="ocean"] { --ububble-bg:#343e4f; --ububble-border:#3c5584; --ububble-fg:#e8edf6; }
+
 /* ===== 记忆详情：类型色条文档卡片 ===== */
 .mem-slug {
   font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -2212,9 +2357,9 @@ watch(() => props.project, load)
   padding: 16px 22px;
   box-shadow: var(--card-shadow);
 }
-.mem-card.mem-feedback { --mem-accent: #e0a23d; }
-.mem-card.mem-user { --mem-accent: #4f8cff; }
-.mem-card.mem-project { --mem-accent: #20bf6b; }
+.mem-card.mem-feedback { --mem-accent: var(--warn-color); }
+.mem-card.mem-user { --mem-accent: var(--user-color); }
+.mem-card.mem-project { --mem-accent: var(--ai-color); }
 .mem-card.mem-reference { --mem-accent: #a55eea; }
 .mem-body { font-size: 13.5px; line-height: 1.78; }
 .mem-body > :first-child { margin-top: 0; }
@@ -2261,7 +2406,7 @@ watch(() => props.project, load)
 .blk-fold summary { cursor: pointer; color: var(--text-tertiary); }
 .blk-result { margin-top: 8px; }
 .blk-result-label { font-size: 11px; color: var(--text-tertiary); margin-bottom: 3px; }
-.blk-result.err .blk-pre { border-color: #f0b4b4; }
+.blk-result.err .blk-pre { border-color: var(--error-border); }
 .blk-toggle {
   font-size: 12px; color: var(--k-accent); cursor: pointer; user-select: none; margin-top: 4px;
 }
@@ -2278,13 +2423,14 @@ watch(() => props.project, load)
 }
 
 /* 各类型配色（取自项目预设色板，协调多彩） */
-.k-user { --k-accent: #4f8cff; --k-bg: #e9f1ff; }
-.k-assistant { --k-accent: #20bf6b; --k-bg: #f4faf6; }
-.k-thinking { --k-accent: #a55eea; --k-bg: #f6eefe; }
-.k-tool { --k-accent: #fa8231; --k-bg: #fff4ec; }
-.k-result { --k-accent: #0fb9b1; --k-bg: #e8faf8; }
-.k-system { --k-accent: #8395a7; --k-bg: #f2f5f8; }
-.k-attach { --k-accent: #a87b4f; --k-bg: #f6efe6; }
+/* accent 语义色 + 半透明 tint（rgba 叠在主题卡片上，浅/深皆适配） */
+.k-user { --k-accent: #4f8cff; --k-bg: rgba(79, 140, 255, 0.12); }
+.k-assistant { --k-accent: #20bf6b; --k-bg: rgba(32, 191, 107, 0.12); }
+.k-thinking { --k-accent: #a55eea; --k-bg: rgba(165, 94, 234, 0.13); }
+.k-tool { --k-accent: #fa8231; --k-bg: rgba(250, 130, 49, 0.12); }
+.k-result { --k-accent: #0fb9b1; --k-bg: rgba(15, 185, 177, 0.12); }
+.k-system { --k-accent: #8395a7; --k-bg: rgba(131, 149, 167, 0.13); }
+.k-attach { --k-accent: #a87b4f; --k-bg: rgba(168, 123, 79, 0.13); }
 
 /* ===== 对话模式：用户卡片 + Claude 大卡片 ===== */
 .ph-chat { display: flex; flex-direction: column; gap: 16px; }
@@ -2300,8 +2446,8 @@ watch(() => props.project, load)
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 12px; font-weight: 700; color: #fff;
 }
-.chat-ava-user { background: #4f8cff; }
-.chat-ava-ai { background: #20bf6b; }
+.chat-ava-user { background: var(--user-color); }
+.chat-ava-ai { background: var(--ai-color); }
 
 /* 用户提问 */
 .chat-user { display: flex; gap: 10px; align-items: flex-start; scroll-margin-top: 8px; border-radius: 12px; }
@@ -2311,17 +2457,19 @@ watch(() => props.project, load)
 .chat-col > .chat-bubble-claude { align-self: stretch; }
 .chat-head { display: flex; align-items: baseline; gap: 8px; padding: 0 2px; max-width: 100%; }
 .chat-name { flex: 0 0 auto; font-size: 12.5px; font-weight: 700; }
-.chat-name-user { color: #3b7bf0; }
-.chat-name-ai { color: #178a4e; }
+.chat-name-user { color: var(--user-color); }
+.chat-name-ai { color: var(--ai-color); }
 .chat-headmeta {
   min-width: 0; word-break: break-word;
   font-size: 10.5px; color: var(--text-tertiary); cursor: default;
 }
 
 .chat-bubble-user {
-  background: #eef4ff; border: 1px solid #d4e3ff;
+  /* 用户气泡：浅色皮肤自适应浅蓝(深字) / 深色皮肤深蓝底(浅字)，由 --ububble-* 控制 */
+  background: var(--ububble-bg);
+  border: 1px solid var(--ububble-border);
   border-radius: 10px; padding: 10px 14px;
-  font-size: 14px; font-weight: 500; line-height: 1.6; color: var(--text-primary);
+  font-size: 14px; font-weight: 500; line-height: 1.6; color: var(--ububble-fg);
 }
 
 /* 斜杠命令：命令名 + 参数，命令行风格 */
@@ -2334,7 +2482,8 @@ watch(() => props.project, load)
 .cmd-name svg { flex: 0 0 auto; }
 .cmd-args {
   font-size: 13px; font-weight: 400; line-height: 1.6;
-  color: var(--text-primary); white-space: pre-wrap; word-break: break-word;
+  /* 命令气泡同处深蓝底，文字跟随气泡浅色，避免浅色皮肤下深字不可见 */
+  color: inherit; white-space: pre-wrap; word-break: break-word;
 }
 
 /* 用户取消通知：居中分隔提示，区别于对话气泡 */
@@ -2347,7 +2496,7 @@ watch(() => props.project, load)
   color: var(--text-tertiary);
   margin: -3px 0;
 }
-.chat-notice svg { flex: 0 0 auto; color: #e0883d; }
+.chat-notice svg { flex: 0 0 auto; color: var(--warn-color); }
 .chat-notice::before,
 .chat-notice::after {
   content: '';
@@ -2399,8 +2548,8 @@ watch(() => props.project, load)
 .think-pre { color: var(--text-secondary); font-style: italic; }
 
 /* 工具执行报错：整卡红色系，折叠态即可识别失败 */
-.sub.tool-error { --k-accent: #e53935; --k-bg: #fdeceb; }
-.sub.tool-error .tool-line-text { color: #e53935; }
+.sub.tool-error { --k-accent: var(--error-color); --k-bg: rgba(229, 57, 53, 0.12); }
+.sub.tool-error .tool-line-text { color: var(--error-color); }
 
 /* Edit 工具：git 风格逐行变更，新增绿 / 删除红 / 上下文中性 */
 .diff {
@@ -2416,12 +2565,12 @@ watch(() => props.project, load)
 .diff-line { display: flex; gap: 6px; padding: 0 10px; white-space: pre-wrap; word-break: break-word; }
 .diff-sign { flex: 0 0 auto; width: 10px; text-align: center; user-select: none; color: var(--text-tertiary); }
 .diff-text { flex: 1 1 auto; min-width: 0; }
-.diff-add { background: rgba(32, 191, 107, 0.13); }
-.diff-add .diff-sign { color: #1d8a4c; }
-.diff-add .diff-text { color: #136c3a; }
-.diff-del { background: rgba(229, 57, 53, 0.11); }
-.diff-del .diff-sign { color: #c0392b; }
-.diff-del .diff-text { color: #a32820; }
+.diff-add { background: var(--diff-add-bg); }
+.diff-add .diff-sign { color: var(--success-color); }
+.diff-add .diff-text { color: var(--success-color); }
+.diff-del { background: var(--diff-del-bg); }
+.diff-del .diff-sign { color: var(--error-color); }
+.diff-del .diff-text { color: var(--error-color); }
 .diff-ctx .diff-text { color: var(--text-secondary); }
 .tool-detail { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .tool-sec-label {
@@ -2432,7 +2581,7 @@ watch(() => props.project, load)
   font-size: 12.5px; line-height: 1.55; color: var(--text-primary);
   white-space: pre-wrap; word-break: break-word;
 }
-.blk-pre.pre-err { border-color: #f0b4b4; }
+.blk-pre.pre-err { border-color: var(--error-border); }
 
 /* ===== 工具调用定制渲染 ===== */
 /* ToolSearch：匹配到的工具列表 */
@@ -2484,13 +2633,13 @@ watch(() => props.project, load)
 .ask-q-badge {
   flex: 0 0 auto; width: 20px; height: 20px; border-radius: 6px;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 700; color: #fff; background: #4f8cff;
+  font-size: 11px; font-weight: 700; color: #fff; background: var(--primary-color);
 }
 .ask-q-tag {
   flex: 0 0 auto;
   font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
   padding: 2px 8px; border-radius: 4px;
-  color: #4f8cff; background: rgba(79, 140, 255, 0.12);
+  color: var(--primary-color); background: var(--primary-soft);
 }
 .ask-q-text {
   font-size: 13.5px; font-weight: 600; line-height: 1.6;
@@ -2505,8 +2654,8 @@ watch(() => props.project, load)
 }
 .ask-opt.chosen {
   opacity: 1;
-  border-color: #20bf6b;
-  background: rgba(32, 191, 107, 0.09);
+  border-color: var(--success-color);
+  background: rgba(32, 191, 107, 0.10);
   box-shadow: 0 0 0 1px rgba(32, 191, 107, 0.32);
 }
 .ask-opt-mark {
@@ -2515,15 +2664,15 @@ watch(() => props.project, load)
   border: 1.5px solid var(--text-tertiary); color: transparent;
   font-size: 11px; font-weight: 700; line-height: 1; box-sizing: border-box;
 }
-.ask-opt.chosen .ask-opt-mark { border-color: #20bf6b; background: #20bf6b; color: #fff; }
+.ask-opt.chosen .ask-opt-mark { border-color: var(--success-color); background: var(--success-color); color: #fff; }
 .ask-opt-body { flex: 1 1 auto; min-width: 0; }
 .ask-opt-label-row { display: flex; align-items: center; gap: 8px; }
 .ask-opt-label { font-size: 12.5px; font-weight: 600; color: var(--text-primary); }
-.ask-opt.chosen .ask-opt-label { color: #16a34a; }
+.ask-opt.chosen .ask-opt-label { color: var(--success-color); }
 .ask-opt-badge {
   flex: 0 0 auto; font-size: 10px; font-weight: 700;
   padding: 1px 8px; border-radius: 999px;
-  color: #fff; background: #20bf6b;
+  color: #fff; background: var(--success-color);
 }
 .ask-opt-desc { margin-top: 3px; font-size: 12px; color: var(--text-secondary); line-height: 1.55; }
 
@@ -2572,8 +2721,8 @@ watch(() => props.project, load)
 .grep-line { display: flex; gap: 8px; padding: 0 10px; white-space: pre-wrap; word-break: break-word; }
 .grep-no { flex: 0 0 auto; min-width: 40px; text-align: right; color: var(--text-tertiary); user-select: none; }
 .grep-text { flex: 1 1 auto; min-width: 0; }
-.grep-hit { background: rgba(250, 130, 49, 0.10); }
-.grep-hit .grep-no { color: #fa8231; font-weight: 700; }
+.grep-hit { background: rgba(250, 130, 49, 0.12); }
+.grep-hit .grep-no { color: var(--warn-color); font-weight: 700; }
 .grep-hit .grep-text { color: var(--text-primary); }
 .grep-ctx .grep-text { color: var(--text-secondary); }
 .grep-raw .grep-text { color: var(--text-secondary); }
@@ -2646,9 +2795,9 @@ watch(() => props.project, load)
 .blk-flash { animation: blkFlash 1.2s ease-out; border-radius: 10px; }
 
 /* 记忆详情头部左色条 */
-.ph-detail-head.m-feedback { border-bottom-color: #f0b86b; }
-.ph-detail-head.m-user { border-bottom-color: #6fa0f0; }
-.ph-detail-head.m-project { border-bottom-color: #5cc585; }
+.ph-detail-head.m-feedback { border-bottom-color: var(--warn-color); }
+.ph-detail-head.m-user { border-bottom-color: var(--user-color); }
+.ph-detail-head.m-project { border-bottom-color: var(--ai-color); }
 .ph-detail-head.m-reference { border-bottom-color: #a877e0; }
 
 /* ===== markdown 容器 ===== */
@@ -2697,8 +2846,8 @@ watch(() => props.project, load)
 }
 .ph-md code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
 .ph-md :not(pre) > code {
-  background: rgba(0, 0, 0, 0.06); padding: 1.5px 5px; border-radius: 4px;
-  font-size: 0.9em; color: #c0392b;
+  background: var(--code-inline-bg); padding: 1.5px 5px; border-radius: 4px;
+  font-size: 0.9em; color: var(--code-inline-fg);
 }
 
 /* 表格：清晰边框 + 表头底色 + 斑马纹 + 宽表横向滚动 */
@@ -2719,7 +2868,7 @@ watch(() => props.project, load)
   line-height: 1.5;
 }
 .ph-md thead th { background: var(--bg-hover); font-weight: 700; color: var(--text-primary); white-space: nowrap; }
-.ph-md tbody tr:nth-child(even) { background: rgba(0, 0, 0, 0.025); }
+.ph-md tbody tr:nth-child(even) { background: var(--table-stripe); }
 
 .ph-toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
@@ -2734,47 +2883,11 @@ watch(() => props.project, load)
   .ph-tag[data-type="project"] { background: #173b27; color: #82d6a3; }
   .ph-tag[data-type="reference"] { background: #34204d; color: #c49bf0; }
 
-  .k-user { --k-bg: rgba(79, 140, 255, 0.13); }
-  .k-assistant { --k-bg: rgba(32, 191, 107, 0.13); }
-  .k-thinking { --k-bg: rgba(165, 94, 234, 0.14); }
-  .k-tool { --k-bg: rgba(250, 130, 49, 0.13); }
-  .k-result { --k-bg: rgba(15, 185, 177, 0.13); }
-  .k-system { --k-bg: rgba(131, 149, 167, 0.13); }
-  .k-attach { --k-bg: rgba(168, 123, 79, 0.14); }
-
-  .blk-pre, .ph-md pre { background: rgba(0, 0, 0, 0.25); }
-  .ph-md :not(pre) > code { background: rgba(255, 255, 255, 0.1); }
-
-  .ph-qitem.active { background: rgba(79, 140, 255, 0.16); }
-
-  /* 暗色：左列黑色 hover 在深底上不可见，改用偏亮灰 */
+  /* 暗色：左列黑色 hover 在深底上不可见，改用偏亮灰（左列在阅读皮肤作用域外，仍随系统） */
   .ph-item:hover { background: #3d434f; border-color: #3d434f; }
-
-  /* 暗色：对话卡片底色 */
-  .chat-bubble-user { background: rgba(79, 140, 255, 0.14); border-color: rgba(79, 140, 255, 0.3); }
-  .chat-name-user { color: #6fa3f5; }
-  .chat-name-ai { color: #5fcf8d; }
-
-  /* 暗色：markdown 行内代码与表格斑马纹 */
-  .ph-md :not(pre) > code { background: rgba(255, 255, 255, 0.1); color: #f3a08c; }
-  .ph-md tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.035); }
-
-  /* 暗色：工具报错红卡 */
-  .sub.tool-error { --k-accent: #ff6b66; --k-bg: rgba(229, 57, 53, 0.14); }
-  .sub.tool-error .tool-line-text { color: #ff8a85; }
-
-  /* 暗色：AskUserQuestion 问答卡配色 */
-  .ask-q-tag { color: #8fb6f5; background: rgba(79, 140, 255, 0.18); }
-  .ask-opt.chosen .ask-opt-label { color: #5fcf8d; }
-
-  /* 暗色：Edit diff 配色 */
-  .diff-add { background: rgba(32, 191, 107, 0.18); }
-  .diff-add .diff-text { color: #7fe0a6; }
-  .diff-del { background: rgba(229, 57, 53, 0.18); }
-  .diff-del .diff-text { color: #f3a39b; }
-
-  /* 暗色：回底按钮空闲态玻璃底改用深色卡片色调 */
-  .ph-jump-bottom { background: rgba(42, 42, 42, 0.6); }
+  /* 注：会话详情（.ph-right）的气泡 / k-类型 tint / diff / 行内码 / 斑马纹 / 报错 / ask /
+     回底玻璃底等，均已改为 color-mix 从 --card-bg 派生，跟随系统暗色由 .ph-right 的种子提供，
+     无需在此重复覆盖。 */
 }
 
 /* ---- 页内查找浮层 ---- */
@@ -2797,7 +2910,7 @@ watch(() => props.project, load)
   background: var(--card-bg);
 }
 .ph-find-box:focus-within { border-color: var(--primary-color); }
-.ph-find-box.invalid { border-color: #e5534b; }
+.ph-find-box.invalid { border-color: var(--error-color); }
 .ph-find-input {
   width: 160px; height: 24px;
   border: none; background: transparent; color: var(--text-primary);
@@ -2894,7 +3007,7 @@ watch(() => props.project, load)
 .agent-sub-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; font-size: 11px; color: var(--text-tertiary); }
 .agent-sub-status { display: inline-flex; align-items: center; gap: 4px; text-transform: capitalize; }
 .agent-sub-status .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.agent-sub-status.st-completed { color: #3aa564; }
+.agent-sub-status.st-completed { color: var(--success-color); }
 .agent-sub-go {
   flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px;
   font-size: 12px; font-weight: 600; color: var(--primary-color); white-space: nowrap;

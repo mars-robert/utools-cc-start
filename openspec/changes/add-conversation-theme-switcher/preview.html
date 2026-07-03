@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>会话详情主题 · 视觉预览（设计 mockup）</title>
+<style>
+  body { margin:0; background:#6b7280; font:14px/1.55 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; color:#111; }
+  .wrap { max-width:1280px; margin:0 auto; padding:24px; }
+  h1 { color:#fff; font-size:18px; margin:0 0 4px; }
+  .sub { color:#e5e7eb; margin:0 0 20px; font-size:13px; }
+  h2 { color:#fff; font-size:14px; margin:28px 0 10px; font-weight:600; }
+
+  /* 6 套皮肤并排 */
+  .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:18px; }
+  @media (max-width:920px){ .grid{ grid-template-columns:1fr; } }
+
+  /* ====== 一块右侧详情面板 = 一套皮肤 ====== */
+  .panel {
+    border-radius:12px; overflow:hidden; box-shadow:0 6px 20px rgba(0,0,0,.28);
+    background:var(--page-bg); color:var(--text-primary);
+    /* —— 派生层：全主题只写一次，从种子 + --card-bg 派生 —— */
+    --k-bg:        color-mix(in srgb, var(--k-accent) 12%, var(--card-bg));
+    --bubble-user-bg:     color-mix(in srgb, var(--user-color) 10%, var(--card-bg));
+    --bubble-user-border: color-mix(in srgb, var(--user-color) 30%, var(--card-bg));
+    --diff-add-bg: color-mix(in srgb, var(--success-color) 16%, var(--card-bg));
+    --diff-del-bg: color-mix(in srgb, var(--error-color) 13%, var(--card-bg));
+    --code-inline-bg: color-mix(in srgb, var(--text-primary) 9%, var(--card-bg));
+    --table-stripe:   color-mix(in srgb, var(--text-primary) 5%, var(--card-bg));
+    --primary-soft:   color-mix(in srgb, var(--primary-color) 14%, var(--card-bg));
+    --error-bg:       color-mix(in srgb, var(--error-color) 12%, var(--card-bg));
+  }
+  .pname { font-size:11px; letter-spacing:.04em; opacity:.65; padding:8px 14px 0; }
+
+  /* —— 详情头 + 筛选条 —— */
+  .head { padding:10px 14px 8px; border-bottom:1px solid var(--border-color); }
+  .title { font-weight:600; font-size:14px; }
+  .meta { font-size:11.5px; color:var(--text-tertiary); margin-top:2px; }
+  .bar { display:flex; align-items:center; gap:6px; padding:8px 14px; flex-wrap:wrap; }
+  .chip { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600;
+          padding:2px 8px; border-radius:999px;
+          background:var(--k-bg); color:var(--k-accent);
+          border:1px solid color-mix(in srgb, var(--k-accent) 30%, var(--card-bg)); }
+  .chip b { font-weight:700; }
+  .k-user{--k-accent:#4f8cff} .k-asst{--k-accent:#20bf6b} .k-think{--k-accent:#a55eea}
+  .k-tool{--k-accent:#fa8231} .k-res{--k-accent:#0fb9b1}
+  .spacer{ flex:1 1 auto; }
+  .iconbtn{ width:26px; height:26px; display:grid; place-items:center; border-radius:7px;
+            border:1px solid var(--border-color); background:var(--card-bg); color:var(--text-secondary); }
+  .iconbtn.theme{ background:var(--primary-soft); border-color:transparent; color:var(--primary-color); }
+
+  /* —— 对话区 —— */
+  .scroll { padding:14px; display:flex; flex-direction:column; gap:14px; }
+  .turn{ display:flex; gap:9px; }
+  .ava{ flex:0 0 auto; width:26px; height:26px; border-radius:50%; display:grid; place-items:center;
+        color:#fff; font-size:11px; font-weight:700; }
+  .ava.u{ background:var(--user-color); } .ava.a{ background:var(--ai-color); }
+  .col{ min-width:0; flex:1 1 auto; }
+  .nm{ font-size:12px; font-weight:700; margin-bottom:3px; }
+  .nm.u{ color:var(--user-color); } .nm.a{ color:var(--ai-color); }
+  .bubble-u{ background:var(--bubble-user-bg); border:1px solid var(--bubble-user-border);
+             border-radius:10px; padding:8px 11px; font-size:13.5px; }
+  .bubble-a{ background:var(--card-bg); border:1px solid var(--border-color);
+             border-radius:10px; padding:9px 11px; font-size:13.5px; }
+  code.inl{ background:var(--code-inline-bg); padding:1px 5px; border-radius:4px;
+            font-family:ui-monospace,Consolas,monospace; font-size:12px; }
+  pre.code{ background:var(--bg-hover); border:1px solid var(--border-color); border-radius:8px;
+            padding:8px 10px; font-size:12px; overflow:auto; margin:8px 0 0;
+            font-family:ui-monospace,Consolas,monospace; }
+  table{ border-collapse:collapse; width:100%; margin-top:8px; font-size:12px; }
+  th,td{ border:1px solid var(--border-color); padding:3px 7px; text-align:left; }
+  th{ background:var(--bg-hover); }
+  tbody tr:nth-child(even){ background:var(--table-stripe); }
+  .diff{ margin-top:8px; border-radius:6px; overflow:hidden; border:1px solid var(--border-color);
+         font-family:ui-monospace,Consolas,monospace; font-size:12px; }
+  .diff div{ padding:1px 8px; }
+  .diff .add{ background:var(--diff-add-bg); color:color-mix(in srgb,var(--success-color) 65%, var(--text-primary)); }
+  .diff .del{ background:var(--diff-del-bg); color:color-mix(in srgb,var(--error-color) 60%, var(--text-primary)); }
+  .toolerr{ margin-top:8px; font-size:12px; padding:5px 9px; border-radius:6px;
+            background:var(--error-bg); color:var(--error-color);
+            border-left:3px solid var(--error-color); }
+  .notice{ font-size:12px; color:var(--warn-color); display:flex; align-items:center; gap:6px; }
+
+  /* ===== 种子：5 套命名皮肤（system = light/dark） ===== */
+  [data-theme="light"]{ --page-bg:#ffffff;--card-bg:#ffffff;--text-primary:#333;--text-secondary:#666;--text-tertiary:#999;--border-color:#e0e0e0;--bg-hover:#f5f5f5;--primary-color:#4f8cff;--user-color:#4f8cff;--ai-color:#20bf6b;--success-color:#20bf6b;--error-color:#e53935;--warn-color:#fa8231; }
+  [data-theme="dark"]{ --page-bg:#1e1f23;--card-bg:#2a2a2a;--text-primary:#e0e0e0;--text-secondary:#aaa;--text-tertiary:#888;--border-color:#3a3a3a;--bg-hover:#333;--primary-color:#5b9cff;--user-color:#6fa3f5;--ai-color:#5fcf8d;--success-color:#5fcf8d;--error-color:#ff6b66;--warn-color:#e0a153; }
+  [data-theme="sepia"]{ --page-bg:#f1e7d0;--card-bg:#faf3e3;--text-primary:#5b4636;--text-secondary:#7a6552;--text-tertiary:#a08c75;--border-color:#e3d4b5;--bg-hover:#efe4cb;--primary-color:#b6794a;--user-color:#8a5a2b;--ai-color:#4f7a4f;--success-color:#4f7a4f;--error-color:#b5443a;--warn-color:#c2792a; }
+  [data-theme="ocean"]{ --page-bg:#0e2230;--card-bg:#143042;--text-primary:#cfe6e3;--text-secondary:#93b8bb;--text-tertiary:#6b8f93;--border-color:#234a55;--bg-hover:#1b3c49;--primary-color:#2bb3c0;--user-color:#56b6e6;--ai-color:#45c8b0;--success-color:#45c8b0;--error-color:#ef6f6f;--warn-color:#e0a153; }
+  [data-theme="forest"]{ --page-bg:#e9f0e5;--card-bg:#f6faf4;--text-primary:#2f3a2f;--text-secondary:#54614f;--text-tertiary:#859184;--border-color:#d6e0d0;--bg-hover:#e4ece0;--primary-color:#3f7d52;--user-color:#3a73b0;--ai-color:#2f7d52;--success-color:#2f7d52;--error-color:#b5443a;--warn-color:#c2792a; }
+
+  /* ===== 下拉预览 gallery ===== */
+  .dd{ width:230px; background:#fff; border:1px solid #e0e0e0; border-radius:10px; padding:6px;
+       box-shadow:0 8px 24px rgba(0,0,0,.18); }
+  .dd .row{ display:flex; align-items:center; gap:9px; padding:5px 7px; border-radius:7px; cursor:default; }
+  .dd .row:hover{ background:#f3f4f6; }
+  .dd .row.on{ background:#eef4ff; }
+  .mini{ flex:0 0 auto; width:46px; height:30px; border-radius:5px; overflow:hidden;
+         background:var(--page-bg); border:1px solid var(--border-color); position:relative; }
+  .mini .mb{ position:absolute; left:4px; top:5px; width:22px; height:5px; border-radius:3px;
+             background:var(--bubble-user-bg); border:1px solid var(--bubble-user-border); }
+  .mini .ma{ position:absolute; left:4px; top:14px; width:30px; height:5px; border-radius:3px;
+             background:var(--card-bg); border:1px solid var(--border-color); }
+  .mini .dot{ position:absolute; right:4px; bottom:4px; width:8px; height:8px; border-radius:50%;
+              background:var(--primary-color); }
+  .dd .rn{ font-size:13px; color:#333; flex:1 1 auto; }
+  .dd .rn small{ display:block; color:#999; font-size:11px; }
+  .dd .ck{ color:#4f8cff; font-weight:700; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>会话详情 · 6 套阅读皮肤视觉预览</h1>
+  <p class="sub">设计 mockup — 用真实 <code>color-mix()</code> + 种子变量渲染同一段对话。非生产代码。<code>system</code> = 经典浅色 / 暗夜（随 OS）。</p>
+
+  <div class="grid" id="grid"></div>
+
+  <h2>主题下拉（纵向预览行）</h2>
+  <div class="dd" id="dd"></div>
+</div>
+
+<script>
+  const THEMES = [
+    ['light','经典浅色（= 跟随系统·浅）'],
+    ['dark','暗夜（= 跟随系统·深）'],
+    ['sepia','护眼·米黄'],
+    ['ocean','海洋·靛青'],
+    ['forest','森林·墨绿'],
+  ];
+
+  const panel = (id,label) => `
+   <div class="panel" data-theme="${id}">
+     <div class="pname">${label}</div>
+     <div class="head">
+       <div class="title">重构会话详情主题切换</div>
+       <div class="meta">⎇ master · v1.2 · 42 条 · 1.3 MB</div>
+     </div>
+     <div class="bar">
+       <span class="chip k-user"><b>7</b> 用户</span>
+       <span class="chip k-asst"><b>12</b> 助手</span>
+       <span class="chip k-think"><b>3</b> 思考</span>
+       <span class="chip k-tool"><b>8</b> 工具</span>
+       <span class="chip k-res"><b>8</b> 结果</span>
+       <span class="spacer"></span>
+       <span class="iconbtn">🔍</span>
+       <span class="iconbtn theme" title="主题">🎨</span>
+     </div>
+     <div class="scroll">
+       <div class="turn">
+         <div class="ava u">我</div>
+         <div class="col"><div class="nm u">用户</div>
+           <div class="bubble-u">把 <code class="inl">--k-bg</code> 改成 color-mix 派生，顺便去掉暗色块。</div>
+         </div>
+       </div>
+       <div class="turn">
+         <div class="ava a">AI</div>
+         <div class="col"><div class="nm a">Claude</div>
+           <div class="bubble-a">
+             已将 tint 统一为 <code class="inl">color-mix(in srgb, …, var(--card-bg))</code>，diff 如下：
+             <div class="diff">
+               <div class="del">- --k-bg: #e9f1ff;</div>
+               <div class="add">+ --k-bg: color-mix(in srgb, var(--k-accent) 12%, var(--card-bg));</div>
+             </div>
+             <pre class="code">.panel[data-theme="ocean"] { --card-bg:#143042; }</pre>
+             <table><thead><tr><th>种子</th><th>取值</th></tr></thead>
+               <tbody><tr><td>card-bg</td><td>#143042</td></tr><tr><td>primary</td><td>#2bb3c0</td></tr></tbody>
+             </table>
+             <div class="toolerr">✕ 工具报错：找不到 variables.css 中的 --legacy-bg</div>
+           </div>
+         </div>
+       </div>
+       <div class="turn"><div class="col"><div class="notice">⊘ 用户已取消工具调用</div></div></div>
+     </div>
+   </div>`;
+
+  document.getElementById('grid').innerHTML = THEMES.map(t=>panel(t[0],t[1])).join('');
+
+  // 下拉：system 行按 matchMedia 解析明暗
+  const osDark = matchMedia('(prefers-color-scheme: dark)').matches;
+  const ROWS = [
+    ['system','跟随系统', osDark?'dark':'light', '当前：'+(osDark?'深色':'浅色'), true],
+    ['light','经典浅色','light','',false],
+    ['dark','暗夜','dark','',false],
+    ['sepia','护眼·米黄','sepia','',false],
+    ['ocean','海洋·靛青','ocean','',false],
+    ['forest','森林·墨绿','forest','',false],
+  ];
+  document.getElementById('dd').innerHTML = ROWS.map(r=>`
+    <div class="row ${r[4]?'on':''}">
+      <div class="mini" data-theme="${r[2]}"><div class="mb"></div><div class="ma"></div><div class="dot"></div></div>
+      <div class="rn">${r[1]}${r[3]?`<small>${r[3]}</small>`:''}</div>
+      ${r[4]?'<span class="ck">✓</span>':''}
+    </div>`).join('');
+</script>
+</body>
+</html>

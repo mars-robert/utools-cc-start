@@ -858,6 +858,9 @@ function clearTerminalPathOverride (id) {
 // ===== 主题配置：主色持久化与派生 =====
 
 const THEME_KEY = 'cctheme.settings'
+// 会话详情阅读皮肤：独立键，正交于主色 THEME_KEY（避免 setThemeColor 整体改写时互相覆盖）
+const READING_SKIN_KEY = 'cctheme.readingSkin'
+const KNOWN_SKINS = ['system', 'light', 'dark', 'sepia', 'ocean', 'forest']
 
 // 内置默认主色（与 variables.css 的 --primary-color 一致）
 const DEFAULT_PRIMARY = '#4f8cff'
@@ -910,6 +913,20 @@ function setThemeColor (hex) {
 // 恢复默认：清除自定义主色（写回 null）
 function resetTheme () {
   window.utools.dbStorage.setItem(THEME_KEY, { primaryColor: null })
+  return true
+}
+
+// 读取会话详情阅读皮肤；缺省或未知值降级为 'system'
+function getReadingSkin () {
+  let raw = null
+  try { raw = window.utools.dbStorage.getItem(READING_SKIN_KEY) } catch (_) { raw = null }
+  return KNOWN_SKINS.includes(raw) ? raw : 'system'
+}
+
+// 设置阅读皮肤（按已知集合校验，合法才写入），返回是否成功
+function setReadingSkin (id) {
+  if (!KNOWN_SKINS.includes(id)) return false
+  window.utools.dbStorage.setItem(READING_SKIN_KEY, id)
   return true
 }
 
@@ -1653,5 +1670,9 @@ window.services = {
   setThemeColor,
   resetTheme,
   deriveHover,
-  isValidHex
+  isValidHex,
+
+  // 会话详情阅读皮肤读写
+  getReadingSkin,
+  setReadingSkin
 }
