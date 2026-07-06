@@ -939,6 +939,29 @@ const openTerminal = () => {
   }
 }
 
+// 顶部项目路径：单击复制、双击打开目录。
+// 用定时器区分单/双击——双击会先触发两次单击，直接裸绑会导致双击时先复制两次。
+let pathClickTimer: ReturnType<typeof setTimeout> | null = null
+const copyPath = () => {
+  const p = props.project && (props.project.cwd || props.project.dirName)
+  if (!p) return
+  try { if (window.utools && window.utools.copyText) window.utools.copyText(p) } catch (_) { /* 忽略 */ }
+  showToast('已复制项目路径')
+}
+const openPath = () => {
+  const p = props.project && props.project.cwd
+  if (!p) return
+  try { if (window.utools && window.utools.shellOpenPath) window.utools.shellOpenPath(p) } catch (_) { /* 忽略 */ }
+}
+const onPathClick = () => {
+  if (pathClickTimer) return
+  pathClickTimer = setTimeout(() => { pathClickTimer = null; copyPath() }, 250)
+}
+const onPathDblClick = () => {
+  if (pathClickTimer) { clearTimeout(pathClickTimer); pathClickTimer = null }
+  openPath()
+}
+
 const doResume = () => {
   if (!selectedSession.value) return
   error.value = ''
@@ -1157,7 +1180,7 @@ watch(() => props.project, load)
             {{ project.branch }}
           </span>
         </div>
-        <div class="ph-proj-path">{{ project && (project.cwd || project.dirName) }}</div>
+        <div class="ph-proj-path" title="单击复制路径 · 双击打开目录" @click="onPathClick" @dblclick="onPathDblClick">{{ project && (project.cwd || project.dirName) }}</div>
       </div>
       <button class="ph-terminal" :disabled="project && !project.available"
         title="在终端打开该项目" @click="openTerminal">
@@ -1869,7 +1892,8 @@ watch(() => props.project, load)
 .ph-proj { flex: 1 1 auto; min-width: 0; }
 .ph-proj-name { display: flex; align-items: center; min-width: 0; }
 .ph-proj-name-text { min-width: 0; font-weight: 600; font-size: 14px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ph-proj-path { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
+.ph-proj-path { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; width: fit-content; max-width: 100%; cursor: pointer; user-select: none; transition: color 0.15s ease; }
+.ph-proj-path:hover { color: var(--text-secondary); text-decoration: underline; }
 .ph-terminal {
   flex: 0 0 auto;
   display: flex;
