@@ -1532,6 +1532,472 @@ function resumeSession (cwd, sessionId) {
   })
 }
 
+// ===== ccplugin：Claude Code 插件生态（商城 + 插件）=====
+//
+// 读写分离：浏览类直接读 ~/.claude 下的 JSON（快、离线、只读安全）；
+// 变更类统一经 `claude plugin …` 子命令执行（复用 CC 官方 git/版本/缓存逻辑，不改写 CC 文件）。
+
+function getClaudePluginsDir () {
+  return path.join(os.homedir(), '.claude', 'plugins')
+}
+
+function getClaudeSettingsPath () {
+  return path.join(os.homedir(), '.claude', 'settings.json')
+}
+
+// 安全读取 JSON 文件；缺失/损坏均降级为 fallback，不抛异常
+function readJsonSafe (filePath, fallback) {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8')
+    const parsed = JSON.parse(raw)
+    return (parsed && typeof parsed === 'object') ? parsed : fallback
+  } catch (_) {
+    return fallback
+  }
+}
+
+// 将 `名称@商城` 拆分为 { name, marketplace }（按最后一个 @ 切，商城名不含 @）
+function splitPluginId (id) {
+  const at = typeof id === 'string' ? id.lastIndexOf('@') : -1
+  if (at < 0) return { name: id || '', marketplace: '' }
+  return { name: id.slice(0, at), marketplace: id.slice(at + 1) }
+}
+
+// 商城来源对象 → 可读字符串（github repo / git url）
+function marketplaceSourceLabel (source) {
+  if (!source || typeof source !== 'object') return ''
+  if (source.repo) return source.repo
+  if (source.url) return source.url
+  return source.source || ''
+}
+
+// 读取插件自身 manifest（.claude-plugin/plugin.json 优先）
+function readPluginManifest (installPath) {
+  if (!installPath) return null
+  return readJsonSafe(path.join(installPath, '.claude-plugin', 'plugin.json'), null) ||
+    readJsonSafe(path.join(installPath, 'plugin.json'), null)
+}
+
+// 读取插件 README 原文（详情弹窗预览用）；按常见文件名探测，超大内容截断防止负担
+function readPluginReadme (installPath) {
+  if (!installPath) return ''
+  for (const fn of ['README.md', 'readme.md', 'Readme.md', 'README']) {
+    try {
+      const raw = fs.readFileSync(path.join(installPath, fn), 'utf-8')
+      if (raw && raw.trim()) return raw.length > 40000 ? raw.slice(0, 40000) : raw
+    } catch (_) { /* 尝试下一个候选文件名 */ }
+  }
+  return ''
+}
+
+function safeExists (p) { try { return !!p && fs.existsSync(p) } catch (_) { return false } }
+function countDirs (dir) { try { return fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).length } catch (_) { return 0 } }
+function countMdFiles (dir, depth) {
+  let entries
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch (_) { return 0 }
+  let n = 0
+  for (const e of entries) {
+    if (e.isFile() && e.name.endsWith('.md')) n++
+    else if (e.isDirectory() && depth > 0) n += countMdFiles(path.join(dir, e.name), depth - 1)
+  }
+  return n
+}
+
+// 扫描插件目录，统计「能力指纹」：技能 / 命令 / 子代理 / 钩子 / MCP
+function scanPluginComponents (installPath, manifest) {
+  if (!installPath) return { skills: 0, commands: 0, agents: 0, hooks: false, mcp: false }
+  return {
+    skills: countDirs(path.join(installPath, 'skills')),
+    commands: countMdFiles(path.join(installPath, 'commands'), 2),
+    agents: countMdFiles(path.join(installPath, 'agents'), 1),
+    hooks: safeExists(path.join(installPath, 'hooks', 'hooks.json')) || safeExists(path.join(installPath, 'hooks.json')) || !!(manifest && manifest.hooks),
+    mcp: !!(manifest && manifest.mcpServers) || safeExists(path.join(installPath, '.mcp.json'))
+  }
+}
+
+// 已安装插件：合并 installed_plugins.json 与 settings.enabledPlugins，并从各插件目录
+// 提取描述与能力指纹（skills/commands/agents/hooks/mcp）。返回按 name 升序。
+function listInstalledPlugins () {
+  const installed = readJsonSafe(path.join(getClaudePluginsDir(), 'installed_plugins.json'), { plugins: {} })
+  const settings = readJsonSafe(getClaudeSettingsPath(), {})
+  const enabled = (settings && typeof settings.enabledPlugins === 'object' && settings.enabledPlugins) || {}
+  const plugins = (installed && typeof installed.plugins === 'object' && installed.plugins) || {}
+  const mpDescCache = {} // marketplace -> { pluginName: description }，补齐无本地 manifest 的插件描述
+  const descFromMarketplace = (mp, name) => {
+    if (!mp) return ''
+    if (!(mp in mpDescCache)) {
+      const m = readJsonSafe(path.join(getClaudePluginsDir(), 'marketplaces', mp, '.claude-plugin', 'marketplace.json'), null)
+      const map = {}
+      if (m && Array.isArray(m.plugins)) for (const p of m.plugins) if (p && p.name) map[p.name] = p.description || ''
+      mpDescCache[mp] = map
+    }
+    return mpDescCache[mp][name] || ''
+  }
+  const out = []
+  for (const id of Object.keys(plugins)) {
+    const entries = Array.isArray(plugins[id]) ? plugins[id] : []
+    const first = entries[0] || {}
+    const { name, marketplace } = splitPluginId(id)
+    const manifest = readPluginManifest(first.installPath)
+    out.push({
+      id,
+      name,
+      marketplace,
+      version: first.version || '',
+      scope: first.scope || '',
+      enabled: enabled[id] === true,
+      description: (manifest && manifest.description) || descFromMarketplace(marketplace, name),
+      components: scanPluginComponents(first.installPath, manifest)
+    })
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name))
+  return out
+}
+
+// 列出目录下的子目录名 / .md 文件名（用于详情弹窗展示「具体有哪些技能/命令/agents」）
+function listSubdirNames (dir) {
+  try { return fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort() } catch (_) { return [] }
+}
+function listMdNames (dir, depth, prefix) {
+  let entries
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch (_) { return [] }
+  const out = []
+  for (const e of entries) {
+    if (e.isFile() && e.name.endsWith('.md')) out.push((prefix ? prefix + '/' : '') + e.name.replace(/\.md$/, ''))
+    else if (e.isDirectory() && depth > 0) out.push(...listMdNames(path.join(dir, e.name), depth - 1, (prefix ? prefix + '/' : '') + e.name))
+  }
+  return out.sort()
+}
+
+// 已安装插件的完整详情（供详情弹窗）：清单元信息 + 组件名称清单 + 安装信息
+function getInstalledPluginDetail (id) {
+  const installed = readJsonSafe(path.join(getClaudePluginsDir(), 'installed_plugins.json'), { plugins: {} })
+  const plugins = (installed && typeof installed.plugins === 'object' && installed.plugins) || {}
+  const entries = Array.isArray(plugins[id]) ? plugins[id] : null
+  if (!entries) return null
+  const first = entries[0] || {}
+  const settings = readJsonSafe(getClaudeSettingsPath(), {})
+  const enabled = (settings && typeof settings.enabledPlugins === 'object' && settings.enabledPlugins) || {}
+  const { name, marketplace } = splitPluginId(id)
+  const ip = first.installPath || ''
+  const manifest = readPluginManifest(ip) || {}
+  return {
+    id,
+    name,
+    marketplace,
+    version: first.version || '',
+    scope: first.scope || '',
+    installedAt: first.installedAt || '',
+    lastUpdated: first.lastUpdated || '',
+    installPath: ip,
+    enabled: enabled[id] === true,
+    description: manifest.description || descOf(marketplace, name),
+    author: normalizeAuthor(manifest.author),
+    homepage: manifest.homepage || '',
+    license: manifest.license || '',
+    keywords: Array.isArray(manifest.keywords) ? manifest.keywords : [],
+    components: scanPluginComponents(ip, manifest),
+    skills: ip ? listSubdirNames(path.join(ip, 'skills')) : [],
+    commands: ip ? listMdNames(path.join(ip, 'commands'), 2, '') : [],
+    agents: ip ? listMdNames(path.join(ip, 'agents'), 1, '') : [],
+    readme: readPluginReadme(ip)
+  }
+}
+
+// 从所属商城清单取插件描述（详情兜底）
+function descOf (mp, name) {
+  if (!mp) return ''
+  const m = readJsonSafe(path.join(getClaudePluginsDir(), 'marketplaces', mp, '.claude-plugin', 'marketplace.json'), null)
+  if (m && Array.isArray(m.plugins)) { const hit = m.plugins.find((p) => p && p.name === name); if (hit) return hit.description || '' }
+  return ''
+}
+
+// 已安装插件 id 集合（供去重标记）
+function installedPluginIdSet () {
+  const set = new Set()
+  for (const p of listInstalledPlugins()) set.add(p.id)
+  return set
+}
+
+// 已知商城：known_marketplaces.json ∪ settings.extraKnownMarketplaces
+// 返回 [{ name, source, sourceLabel, installLocation, lastUpdated }]，按 name 升序
+// 统计某商城清单中的插件数（供商城卡片展示；清单未克隆到本地则为 0）
+function marketplacePluginCount (name) {
+  if (!isSafeSegment(name)) return 0
+  const m = readJsonSafe(path.join(getClaudePluginsDir(), 'marketplaces', name, '.claude-plugin', 'marketplace.json'), null)
+  return m && Array.isArray(m.plugins) ? m.plugins.length : 0
+}
+
+function listKnownMarketplaces () {
+  const known = readJsonSafe(path.join(getClaudePluginsDir(), 'known_marketplaces.json'), {})
+  const settings = readJsonSafe(getClaudeSettingsPath(), {})
+  const extra = (settings && typeof settings.extraKnownMarketplaces === 'object' && settings.extraKnownMarketplaces) || {}
+  const names = new Set([...Object.keys(known), ...Object.keys(extra)])
+  const out = []
+  for (const name of names) {
+    const entry = known[name] || extra[name] || {}
+    out.push({
+      name,
+      source: entry.source || {},
+      sourceLabel: marketplaceSourceLabel(entry.source),
+      installLocation: entry.installLocation || '',
+      lastUpdated: entry.lastUpdated || '',
+      pluginCount: marketplacePluginCount(name)
+    })
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name))
+  return out
+}
+
+// 某商城的可安装插件：读取 marketplaces/<mp>/.claude-plugin/marketplace.json
+// 返回 [{ name, description, author, category, source, installed }]
+function listMarketplacePlugins (mp) {
+  if (!isSafeSegment(mp)) return []
+  const file = path.join(getClaudePluginsDir(), 'marketplaces', mp, '.claude-plugin', 'marketplace.json')
+  const manifest = readJsonSafe(file, null)
+  if (!manifest || !Array.isArray(manifest.plugins)) return []
+  const installedIds = installedPluginIdSet()
+  return manifest.plugins.map((p) => {
+    const author = p && p.author
+    const authorName = author && typeof author === 'object' ? (author.name || '') : (typeof author === 'string' ? author : '')
+    return {
+      name: (p && p.name) || '',
+      description: (p && p.description) || '',
+      author: authorName,
+      category: (p && p.category) || '',
+      source: (p && p.source) || {},
+      installed: installedIds.has(((p && p.name) || '') + '@' + mp)
+    }
+  }).filter((p) => p.name)
+}
+
+// ---- 变更操作：调用 `claude` CLI（异步，避免阻塞渲染线程）----
+
+const CLAUDE_TIMEOUT_MS = 120000
+
+// 低层：异步执行 `claude <args>`，捕获 stdout/stderr/退出码，带超时
+// 返回 Promise<{ success, code, stdout, stderr }>
+function runClaude (args) {
+  return new Promise((resolve) => {
+    let child
+    try {
+      child = spawn('claude', args, { shell: process.platform === 'win32' })
+    } catch (err) {
+      resolve({ success: false, code: -1, stdout: '', stderr: err && err.message ? err.message : String(err) })
+      return
+    }
+    // 测试桩返回的子进程无 on/stdout 能力：安全降级，不抛异常
+    if (!child || typeof child.on !== 'function') {
+      resolve({ success: false, code: -1, stdout: '', stderr: 'spawn 不可用' })
+      return
+    }
+    let stdout = ''
+    let stderr = ''
+    let done = false
+    const finish = (r) => { if (!done) { done = true; clearTimeout(timer); resolve(r) } }
+    const timer = setTimeout(() => {
+      try { child.kill() } catch (_) { /* 忽略 */ }
+      finish({ success: false, code: -1, stdout, stderr: (stderr || '') + '\n[超时]' })
+    }, CLAUDE_TIMEOUT_MS)
+    if (child.stdout) child.stdout.on('data', (d) => { stdout += d })
+    if (child.stderr) child.stderr.on('data', (d) => { stderr += d })
+    child.on('error', (err) => finish({ success: false, code: -1, stdout, stderr: err && err.message ? err.message : String(err) }))
+    child.on('close', (code) => finish({ success: code === 0, code, stdout, stderr }))
+  })
+}
+
+function runClaudePlugin (args) {
+  return runClaude(['plugin', ...args])
+}
+
+// 探测 PATH 上是否存在可用的 claude CLI（`claude --version` 成功）
+function detectClaudeCli () {
+  return runClaude(['--version']).then((r) => r.success).catch(() => false)
+}
+
+// 语义化变更服务（均返回 runClaude 结果 Promise）
+function installPlugin (name, marketplace) {
+  const id = marketplace ? name + '@' + marketplace : name
+  return runClaudePlugin(['install', id])
+}
+// -y：非交互（无 TTY）时跳过潜在确认提示，避免进程挂起至超时
+function uninstallPlugin (id) { return runClaudePlugin(['uninstall', '-y', id]) }
+function enablePlugin (id) { return runClaudePlugin(['enable', id]) }
+function disablePlugin (id) { return runClaudePlugin(['disable', id]) }
+function updatePlugin (id) { return runClaudePlugin(['update', id]) }
+
+// 校验商城来源：github `owner/repo` 或 git URL；拒绝含 shell 危险字符者
+function isValidMarketplaceSource (source) {
+  if (typeof source !== 'string') return false
+  const s = source.trim()
+  if (!s || /[\s;&|`$(){}<>'"\\]/.test(s)) return false
+  return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(s) || /^https?:\/\/[^\s]+$/.test(s)
+}
+function addMarketplace (source) {
+  const s = (source || '').trim()
+  if (!isValidMarketplaceSource(s)) {
+    return Promise.resolve({ success: false, code: -1, stdout: '', stderr: '商城来源格式无效（应为 owner/repo 或 git URL）' })
+  }
+  return runClaudePlugin(['marketplace', 'add', s])
+}
+function removeMarketplace (name) {
+  if (!name) return Promise.resolve({ success: false, code: -1, stdout: '', stderr: '商城名为空' })
+  return runClaudePlugin(['marketplace', 'remove', name])
+}
+
+// ---- 热门发现：从 GitHub 实时获取（无内置假数据）----
+//
+// 插件推荐 = 官方目录 anthropics/claude-plugins-official（raw 拉取，无限流，255 款真实插件）；
+// 热门商城 = GitHub 按 topic:claude-code-plugins 搜索候选仓库，再用 raw 直拉 .claude-plugin/marketplace.json 校验，只保留真商城。
+// 关键：用 raw CDN（几乎无限流）代替会限流的 contents API 校验；star 从搜索结果直接取，全程仅 1 次受限 search 调用。
+// 结果缓存于 dbStorage；离线且无缓存时返回空（诚实空态），绝不塞假数据。
+
+const HOT_CACHE_KEY = 'ccplugin.cache'
+const OFFICIAL_MARKETPLACE = 'claude-plugins-official'
+const OFFICIAL_CATALOG_URL = 'https://raw.githubusercontent.com/anthropics/claude-plugins-official/main/.claude-plugin/marketplace.json'
+const GH_API = 'https://api.github.com'
+const GH_HEADERS = { 'User-Agent': 'ccplugin-utools', Accept: 'application/vnd.github+json' }
+const HOT_TOPIC = 'claude-code-plugins' // GitHub topic：实测命中真实 Claude 商城，远优于裸词搜索（后者命中 awesome 等无关高星仓）
+const RAW_BASE = 'https://raw.githubusercontent.com'
+
+// 懒加载 https 发起 GET 并解析 JSON（顶层 require 会破坏测试沙箱，故内置于函数）
+function httpsGetJson (url, headers, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let https
+    try { https = require('node:https') } catch (e) { reject(e); return }
+    const req = https.get(url, { headers: headers || {}, timeout: timeoutMs || 10000 }, (res) => {
+      const status = res.statusCode
+      let body = ''
+      res.setEncoding('utf-8')
+      res.on('data', (d) => { body += d })
+      res.on('end', () => {
+        if (status < 200 || status >= 300) { reject(new Error('HTTP ' + status)); return }
+        try { resolve(JSON.parse(body)) } catch (e) { reject(e) }
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => { req.destroy(new Error('请求超时')) })
+  })
+}
+
+function normalizeAuthor (a) {
+  if (a && typeof a === 'object') return a.name || ''
+  return typeof a === 'string' ? a : ''
+}
+
+// 官方目录 → 插件推荐（精简字段以控制缓存体积）
+async function fetchOfficialRecommendations () {
+  const manifest = await httpsGetJson(OFFICIAL_CATALOG_URL, {}, 12000)
+  const plugins = Array.isArray(manifest.plugins) ? manifest.plugins : []
+  return plugins
+    .filter((p) => p && p.name)
+    .map((p) => ({
+      plugin: p.name,
+      marketplace: OFFICIAL_MARKETPLACE,
+      description: p.description || '',
+      category: p.category || '',
+      author: normalizeAuthor(p.author)
+    }))
+}
+
+// GitHub 搜索 → 逐个校验为真商城 → 取前 limit 个（按 star 降序）
+async function fetchHotMarketplaces (limit) {
+  const url = GH_API + '/search/repositories?q=' + encodeURIComponent('topic:' + HOT_TOPIC) + '&sort=stars&order=desc&per_page=30'
+  const search = await httpsGetJson(url, GH_HEADERS, 12000)
+  const items = Array.isArray(search.items) ? search.items : []
+  const cap = limit || 12
+  const out = []
+  for (const r of items) {
+    if (out.length >= cap) break
+    const branch = r.default_branch || 'main'
+    try {
+      // raw CDN 直拉清单校验（几乎无限流），避开逐仓库走 contents API 触发的 60/小时限流
+      const manifest = await httpsGetJson(RAW_BASE + '/' + r.full_name + '/' + branch + '/.claude-plugin/marketplace.json', { 'User-Agent': 'ccplugin-utools' }, 10000)
+      const mplugins = Array.isArray(manifest.plugins) ? manifest.plugins : []
+      if (!mplugins.length) continue // 无插件 / 非真商城：跳过
+      out.push({
+        name: manifest.name || r.name,
+        repo: r.full_name,
+        url: r.html_url || ('https://github.com/' + r.full_name),
+        stars: r.stargazers_count || 0,
+        description: manifest.description || r.description || '',
+        pluginCount: mplugins.length,
+        // 每商城取前 6 个插件作多源推荐（精简字段以控缓存体积）
+        plugins: mplugins.slice(0, 6).map((p) => ({ plugin: p.name, description: p.description || '', category: p.category || '', author: normalizeAuthor(p.author) })).filter((p) => p.plugin)
+      })
+    } catch (_) { /* 无 .claude-plugin/marketplace.json（404）：非真商城，跳过 */ }
+  }
+  return out
+}
+
+function readHotCache () {
+  try {
+    const raw = window.utools.dbStorage.getItem(HOT_CACHE_KEY)
+    if (raw && typeof raw === 'object' && raw.data) return raw
+  } catch (_) { /* 忽略 */ }
+  return null
+}
+
+// 去重标记：热门商城标 known，推荐插件标 installed（对照真实本地状态）
+function annotateHot (data) {
+  const knownNames = new Set(listKnownMarketplaces().map((m) => m.name))
+  const installedIds = installedPluginIdSet()
+  const marketplaces = (Array.isArray(data.marketplaces) ? data.marketplaces : []).map((m) => ({
+    ...m,
+    known: knownNames.has(m.name)
+  }))
+  const recommended = (Array.isArray(data.recommended) ? data.recommended : []).map((p) => ({
+    ...p,
+    id: p.plugin + '@' + p.marketplace,
+    installed: installedIds.has(p.plugin + '@' + p.marketplace)
+  }))
+  return { marketplaces, recommended }
+}
+
+// 同步：读缓存并标记；无缓存返回诚实空态（不含假数据）
+function getHotList () {
+  const cache = readHotCache()
+  if (cache && cache.data) {
+    return { ...annotateHot(cache.data), source: 'cache', fetchedAt: cache.fetchedAt || '' }
+  }
+  return { marketplaces: [], recommended: [], source: 'offline', fetchedAt: '' }
+}
+
+// 强制联网刷新：两路并发拉取，成功写缓存并返回 live；全部失败回退缓存/空态
+async function refreshHotList () {
+  try {
+    const [marketplaces, official] = await Promise.all([
+      fetchHotMarketplaces(12).catch(() => []),
+      fetchOfficialRecommendations().catch(() => [])
+    ])
+    if (!marketplaces.length && !official.length) throw new Error('empty')
+    // 官方仓库信息：给官方目录插件补 repo / star（官方仓库通常也在热门商城搜索结果内）
+    const officialMp = marketplaces.find((m) => m.name === OFFICIAL_MARKETPLACE || m.repo === 'anthropics/claude-plugins-official')
+    const officialRepo = officialMp ? officialMp.repo : 'anthropics/claude-plugins-official'
+    let officialStars = officialMp ? officialMp.stars : 0
+    // 官方仓库通常不打 topic、未必出现在热门搜索里，则单独查一次 star（1 次 API 调用，让官方目录也有热度、排序靠前）
+    if (!officialStars) {
+      try { const rp = await httpsGetJson(GH_API + '/repos/' + officialRepo, GH_HEADERS, 8000); officialStars = rp.stargazers_count || 0 } catch (_) { /* 拿不到就置 0，官方靠徽章体现 */ }
+    }
+    // 多源聚合推荐：官方目录（official=true）+ 各热门商城插件（official=false，热度=所属商城 star），按 name@marketplace 去重
+    const recMap = new Map()
+    const addRec = (r) => { const key = r.plugin + '@' + r.marketplace; if (r.plugin && !recMap.has(key)) recMap.set(key, r) }
+    for (const p of official) addRec({ ...p, repo: officialRepo, stars: officialStars, official: true })
+    for (const m of marketplaces) {
+      if (m.name === OFFICIAL_MARKETPLACE || m.repo === officialRepo) continue // 官方已由目录提供，避免重复
+      for (const p of (m.plugins || [])) addRec({ plugin: p.plugin, marketplace: m.name, description: p.description, category: p.category, author: p.author, repo: m.repo, stars: m.stars, official: false })
+    }
+    const recommended = [...recMap.values()]
+    // 缓存里的商城列表剔除内嵌 plugins（已并入 recommended，避免体积翻倍）
+    const slimMarkets = marketplaces.map(({ plugins, ...m }) => m)
+    const data = { marketplaces: slimMarkets, recommended }
+    try { window.utools.dbStorage.setItem(HOT_CACHE_KEY, { data, fetchedAt: new Date().toISOString() }) } catch (_) { /* 忽略写盘失败 */ }
+    return { ...annotateHot(data), source: 'live', fetchedAt: new Date().toISOString() }
+  } catch (_) {
+    return getHotList()
+  }
+}
+
 // 通过 window 对象向渲染进程注入 nodejs 能力
 window.services = {
   // ===== Claude Code 项目启动器 =====
@@ -1674,5 +2140,27 @@ window.services = {
 
   // 会话详情阅读皮肤读写
   getReadingSkin,
-  setReadingSkin
+  setReadingSkin,
+
+  // ===== ccplugin：插件生态（商城 + 插件）=====
+
+  // 只读浏览
+  listInstalledPlugins,
+  getInstalledPluginDetail,
+  listKnownMarketplaces,
+  listMarketplacePlugins,
+
+  // claude CLI 探测与变更操作
+  detectClaudeCli,
+  installPlugin,
+  uninstallPlugin,
+  enablePlugin,
+  disablePlugin,
+  updatePlugin,
+  addMarketplace,
+  removeMarketplace,
+
+  // 热门榜单（缓存/兜底 + 联网刷新）
+  getHotList,
+  refreshHotList
 }

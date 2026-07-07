@@ -34,14 +34,14 @@ const activeTab = ref<'launch' | 'commands' | 'claude' | 'theme'>('launch')
         <span class="nav-icon nav-icon--cmd">⌘</span>
         <span class="nav-text">快捷命令</span>
       </button>
-      <button
+      <!-- <button
         class="nav-item"
         :class="{ active: activeTab === 'claude' }"
         @click="activeTab = 'claude'"
       >
         <span class="nav-icon nav-icon--json">⌬</span>
         <span class="nav-text">.claude.json 配置</span>
-      </button>
+      </button> -->
       <button
         class="nav-item"
         :class="{ active: activeTab === 'theme' }"

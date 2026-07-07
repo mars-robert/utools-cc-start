@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue';
 import ProjectLauncher from './ProjectLauncher/index.vue'
 import UnifiedConfig from './UnifiedConfig/index.vue'
 import CommandList from './CommandList/index.vue'
+import PluginCenter from './PluginCenter/index.vue'
 import { initTheme } from './theme'
 
 const route = ref('')
@@ -31,5 +32,8 @@ onMounted(() => {
   </template>
   <template v-if="route === 'ccrun'">
     <CommandList :enterAction="enterAction"></CommandList>
+  </template>
+  <template v-if="route === 'ccplugin'">
+    <PluginCenter :enterAction="enterAction"></PluginCenter>
   </template>
 </template>

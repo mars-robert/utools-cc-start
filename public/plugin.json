@@ -29,6 +29,15 @@
       "cmds": [
         "ccrun"
       ]
+    },
+    {
+      "code": "ccplugin",
+      "explain": "管理 Claude Code 插件商城与插件（含热门发现）",
+      "cmds": [
+        "ccplugin",
+        "ccp",
+        "插件"
+      ]
     }
   ]
 }
