@@ -309,6 +309,10 @@ function getCodexSessionsDir () {
   return path.join(os.homedir(), '.codex', 'sessions')
 }
 
+function getCodexStateDbPath () {
+  return path.join(os.homedir(), '.codex', 'state_5.sqlite')
+}
+
 // Codex session files can be large. Read only the first JSONL record, which is
 // the session_meta record containing cwd.
 function readFirstJsonlLine (filePath, maxBytes) {
@@ -379,42 +383,73 @@ function collectCodexSessionFiles (sessionsDir) {
   return files
 }
 
+function stripWindowsExtendedPathPrefix (cwd) {
+  if (typeof cwd !== 'string') return ''
+  if (process.platform !== 'win32') return cwd
+  if (cwd.startsWith('\\\\?\\UNC\\')) return '\\\\' + cwd.slice(8)
+  if (cwd.startsWith('\\\\?\\')) return cwd.slice(4)
+  return cwd
+}
+
 function normalizeCodexProjectPath (cwd) {
-  const normalized = path.normalize(cwd)
+  const normalized = path.normalize(stripWindowsExtendedPathPrefix(cwd).trim())
   return {
     cwd: normalized,
     key: process.platform === 'win32' ? normalized.toLowerCase() : normalized
   }
 }
 
-function listCodexProjects () {
-  const sessionsDir = getCodexSessionsDir()
-  const result = { dirExists: false, projects: [] }
+function getCodexThreadRecency (row) {
+  const recencyMs = Number(row && row.recency_at_ms)
+  if (Number.isFinite(recencyMs) && recencyMs > 0) return recencyMs
+  const updatedMs = Number(row && row.updated_at_ms)
+  if (Number.isFinite(updatedMs) && updatedMs > 0) return updatedMs
+  const updated = Number(row && row.updated_at)
+  if (Number.isFinite(updated) && updated > 0) return updated * 1000
+  return 0
+}
+
+function readCodexThreadRowsFromStateDb () {
+  const dbPath = getCodexStateDbPath()
   try {
-    if (!fs.existsSync(sessionsDir)) return result
-    result.dirExists = true
+    if (!fs.existsSync(dbPath)) return null
   } catch (_) {
-    return result
+    return null
   }
 
-  const byPath = new Map()
-  for (const filePath of collectCodexSessionFiles(sessionsDir)) {
-    const meta = readCodexSessionMeta(filePath)
-    if (!meta) continue
+  let sqlite
+  try {
+    sqlite = require('node:sqlite')
+  } catch (_) {
+    return null
+  }
 
-    const normalized = normalizeCodexProjectPath(meta.cwd)
-    let recency = meta.timestamp
-    try {
-      const stat = fs.statSync(filePath)
-      if (Number.isFinite(stat.mtimeMs) && stat.mtimeMs > 0) recency = stat.mtimeMs
-    } catch (_) { /* use the session timestamp */ }
-
-    const previous = byPath.get(normalized.key)
-    if (!previous || recency > previous.recency) {
-      byPath.set(normalized.key, { cwd: normalized.cwd, recency })
+  let db
+  try {
+    db = new sqlite.DatabaseSync(dbPath, { readOnly: true })
+    return db.prepare(
+      "select cwd, recency_at_ms, updated_at_ms, updated_at from threads where cwd is not null and trim(cwd) <> ''"
+    ).all()
+  } catch (_) {
+    return null
+  } finally {
+    if (db && typeof db.close === 'function') {
+      try { db.close() } catch (_) { /* ignore */ }
     }
   }
+}
 
+function addCodexProjectCandidate (byPath, cwd, recency) {
+  if (typeof cwd !== 'string' || !cwd.trim()) return
+  const normalized = normalizeCodexProjectPath(cwd)
+  if (!normalized.cwd) return
+  const previous = byPath.get(normalized.key)
+  if (!previous || recency > previous.recency) {
+    byPath.set(normalized.key, { cwd: normalized.cwd, recency })
+  }
+}
+
+function buildCodexProjectsFromCandidates (byPath) {
   const projects = []
   for (const [key, item] of byPath) {
     let available = false
@@ -431,9 +466,46 @@ function listCodexProjects () {
       source: 'codex'
     })
   }
-
   projects.sort((a, b) => b.recency - a.recency)
-  result.projects = projects
+  return projects
+}
+
+function listCodexProjects () {
+  const result = { dirExists: false, projects: [] }
+  const threadRows = readCodexThreadRowsFromStateDb()
+  if (threadRows) {
+    const byPath = new Map()
+    for (const row of threadRows) {
+      addCodexProjectCandidate(byPath, row.cwd, getCodexThreadRecency(row))
+    }
+    result.dirExists = true
+    result.projects = buildCodexProjectsFromCandidates(byPath)
+    return result
+  }
+
+  const sessionsDir = getCodexSessionsDir()
+  try {
+    if (!fs.existsSync(sessionsDir)) return result
+    result.dirExists = true
+  } catch (_) {
+    return result
+  }
+
+  const byPath = new Map()
+  for (const filePath of collectCodexSessionFiles(sessionsDir)) {
+    const meta = readCodexSessionMeta(filePath)
+    if (!meta) continue
+
+    let recency = meta.timestamp
+    try {
+      const stat = fs.statSync(filePath)
+      if (Number.isFinite(stat.mtimeMs) && stat.mtimeMs > 0) recency = stat.mtimeMs
+    } catch (_) { /* use the session timestamp */ }
+
+    addCodexProjectCandidate(byPath, meta.cwd, recency)
+  }
+
+  result.projects = buildCodexProjectsFromCandidates(byPath)
   return result
 }
 
@@ -1939,6 +2011,30 @@ function openClaudeSettingsFile () {
   }
 }
 
+function openProjectFolder (cwd) {
+  if (!cwd || typeof cwd !== 'string') {
+    return { success: false, error: '项目路径无效' }
+  }
+  const target = cwd.trim()
+  if (!target || !fs.existsSync(target)) {
+    return { success: false, error: `项目目录不存在：${target || cwd}` }
+  }
+
+  try {
+    if (!window.utools || typeof window.utools.shellOpenPath !== 'function') {
+      return { success: false, error: '当前环境不支持打开文件夹' }
+    }
+
+    const error = window.utools.shellOpenPath(target)
+    if (typeof error === 'string' && error) {
+      return { success: false, error }
+    }
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) }
+  }
+}
+
 // 安全读取 JSON 文件；缺失/损坏均降级为 fallback，不抛异常
 function readJsonSafe (filePath, fallback) {
   try {
@@ -2585,6 +2681,7 @@ window.services = {
 
   // 使用系统默认应用打开 Claude settings.json
   openClaudeSettingsFile,
+  openProjectFolder,
 
   // ===== ccplugin：插件生态（商城 + 插件）=====
 

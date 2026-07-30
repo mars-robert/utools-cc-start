@@ -47,6 +47,47 @@ function makeServices ({ tree = {}, files = {}, mtimes = {}, existing = [] } = {
   })
 }
 
+
+test('listCodexProjects prefers Codex sqlite thread index and normalizes Windows extended paths', () => {
+  const alpha = 'D:\\code\\alpha'
+  const beta = 'D:\\code\\beta'
+  const rows = [
+    { cwd: '\\\\?\\D:\\code\\beta', recency_at_ms: 2000, updated_at_ms: 2100, updated_at: 2 },
+    { cwd: '\\\\?\\D:\\code\\alpha', recency_at_ms: 1000, updated_at_ms: 1100, updated_at: 1 },
+    { cwd: 'D:\\code\\alpha', recency_at_ms: 3000, updated_at_ms: 3100, updated_at: 3 }
+  ]
+  const sqlitePath = path.join(HOME, '.codex', 'state_5.sqlite')
+  const { services } = loadPreload({
+    homedir: HOME,
+    exists: (p) => [sqlitePath, alpha, beta].includes(String(p)),
+    modules: {
+      'node:sqlite': {
+        DatabaseSync: class {
+          constructor (filePath, options) {
+            assert.equal(filePath, sqlitePath)
+            assert.equal(options.readOnly, true)
+          }
+
+          prepare (sql) {
+            assert.match(sql, /from threads/i)
+            return { all: () => rows }
+          }
+
+          close () {}
+        }
+      }
+    }
+  })
+
+  const result = services.listCodexProjects()
+
+  assert.equal(result.dirExists, true)
+  assert.equal(result.projects.length, 2)
+  assert.equal(result.projects[0].cwd, alpha)
+  assert.equal(result.projects[0].recency, 3000)
+  assert.equal(result.projects[1].cwd, beta)
+  assert.equal(result.projects[0].source, 'codex')
+})
 test('listCodexProjects recursively discovers, deduplicates and sorts session cwd values', () => {
   const year = path.join(SESSIONS, '2026')
   const month = path.join(year, '07')

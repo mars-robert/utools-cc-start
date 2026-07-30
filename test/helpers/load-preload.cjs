@@ -14,7 +14,8 @@ function loadPreload ({
   unlink = () => {},
   stat = (p) => fs.statSync(p),
   readdir = (p, options) => fs.readdirSync(p, options),
-  store = {}
+  store = {},
+  modules = {}
 } = {}) {
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'preload', 'services.js'), 'utf8')
   const spawns = []
@@ -33,6 +34,7 @@ function loadPreload ({
     moduleCache.set(filePath, module)
 
     const localRequire = (id) => {
+      if (Object.prototype.hasOwnProperty.call(modules, id)) return modules[id]
       if (id.startsWith('./') || id.startsWith('../')) {
         return loadModule(path.join(path.dirname(filePath), id))
       }

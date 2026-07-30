@@ -127,6 +127,16 @@ const launch = (project: any) => {
   }
 }
 
+// 右键项目行时在系统文件管理器中打开工作目录
+const openProjectFolder = (project: any) => {
+  if (!project || !project.available) return
+  error.value = ''
+  const result = window.services.openProjectFolder?.(project.cwd)
+  if (!result || !result.success) {
+    error.value = (result && result.error) || '打开文件夹失败'
+  }
+}
+
 // 确认删除失效项目记录
 const confirmDelete = () => {
   const target = confirmTarget.value
@@ -308,6 +318,7 @@ onUnmounted(() => {
               unavailable: !p.available
             }"
             @click="launch(p)"
+            @contextmenu.prevent.stop="openProjectFolder(p)"
             @mouseenter="rowFocus = 'item'"
           >
             <div class="launcher-item-main">

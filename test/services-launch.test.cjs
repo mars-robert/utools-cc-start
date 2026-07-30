@@ -77,6 +77,42 @@ test('openClaudeSettingsFile reports a missing settings.json', () => {
   assert.deepEqual(openedPaths, [])
 })
 
+test('openProjectFolder opens an existing project directory', () => {
+  const cwd = 'D:\\code\\demo project'
+  const { services, openedPaths } = loadServices({
+    exists: (filePath) => filePath === cwd
+  })
+
+  const result = services.openProjectFolder(cwd)
+
+  assert.equal(result.success, true)
+  assert.deepEqual(openedPaths, [cwd])
+})
+
+test('openProjectFolder rejects missing or invalid project directories', () => {
+  const { services, openedPaths } = loadServices({ exists: () => false })
+
+  assert.equal(services.openProjectFolder('').success, false)
+  const result = services.openProjectFolder('D:\\missing')
+
+  assert.equal(result.success, false)
+  assert.deepEqual(openedPaths, [])
+})
+
+test('openProjectFolder reports shellOpenPath errors', () => {
+  const cwd = 'D:\\code\\demo project'
+  const { services, openedPaths } = loadServices({
+    exists: (filePath) => filePath === cwd,
+    shellOpenPath: () => 'open failed'
+  })
+
+  const result = services.openProjectFolder(cwd)
+
+  assert.equal(result.success, false)
+  assert.equal(result.error, 'open failed')
+  assert.deepEqual(openedPaths, [cwd])
+})
+
 test('launchProject starts Windows Terminal with -d working directory and a direct PowerShell command', () => {
   const cwd = 'D:\\code\\demo project'
   const { services, spawns } = loadServices({
