@@ -12,6 +12,9 @@ function loadActiveSessions () {
   return require('./active-sessions.cjs')
 }
 
+// 环境配置管理（新版本 - ccmate 风格）
+const envConfig = require('./env-config-new.js')
+
 // ===== Claude Code 项目启动器：设置存储 =====
 
 const SETTINGS_KEY = 'ccstart.settings'
@@ -53,8 +56,6 @@ function detectWinPowershell () {
 
 const BUILTIN_LAUNCH_COMMANDS = [
   { id: 'lc-claude', label: 'Claude', command: 'claude' },
-  { id: 'lc-continue', label: 'Claude 继续上次会话 (--continue)', command: 'claude --continue' },
-  { id: 'lc-resume', label: 'Claude 恢复会话 (--resume)', command: 'claude --resume' },
   { id: 'lc-skip', label: 'Claude 跳过权限确认 (--dangerously-skip-permissions)', command: 'claude --dangerously-skip-permissions' }
 ]
 
@@ -2427,6 +2428,41 @@ window.services = {
   // 会话详情阅读皮肤读写
   getReadingSkin,
   setReadingSkin,
+
+  // ===== API 环境配置（新版 - ccmate 风格）=====
+
+  // 获取所有配置
+  getStores: envConfig.getStores,
+
+  // 获取单个配置
+  getStore: envConfig.getStore,
+
+  // 获取当前生效配置
+  getCurrentStore: envConfig.getCurrentStore,
+
+  // 创建配置
+  createConfig: envConfig.createConfig,
+
+  // 更新配置
+  updateConfig: envConfig.updateConfig,
+
+  // 删除配置
+  deleteConfig: envConfig.deleteConfig,
+
+  // 切换配置
+  setUsingConfig: envConfig.setUsingConfig,
+
+  // 重置到原始配置
+  resetToOriginalConfig: envConfig.resetToOriginalConfig,
+
+  // 获取预设模板
+  getPresets: envConfig.getPresets,
+
+  // 应用预设模板
+  applyPreset: envConfig.applyPreset,
+
+  // 读取当前 Claude settings.json
+  readClaudeSettings: envConfig.readCurrentClaudeSettings,
 
   // ===== ccplugin：插件生态（商城 + 插件）=====
 

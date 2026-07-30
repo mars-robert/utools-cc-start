@@ -81,7 +81,8 @@ test('launchProject starts Windows Terminal with -d working directory and a dire
 test('getLauncherSettings returns builtin presets with defaults', () => {
   const { services } = loadServices()
   const s = services.getLauncherSettings()
-  assert.equal(s.launchCommands.length, 4)
+  assert.equal(s.launchCommands.length, 2)
+  assert.deepEqual(Array.from(s.launchCommands, (command) => command.id), ['lc-claude', 'lc-skip'])
   assert.equal(s.terminals.length, 4)
   assert.equal(s.launchCommand, 'claude')
   assert.equal(s.codexLaunchCommand, 'codex')
@@ -99,7 +100,7 @@ test('migrates legacy settings into v2 list model', () => {
   const { services } = loadServices({ store })
   const s = services.getLauncherSettings()
   assert.equal(s.launchCommand, 'claude --resume')
-  assert.equal(s.selectedLaunchId, 'lc-resume')
+  assert.equal(s.selectedLaunchId, 'lc-custom-legacy')
   assert.equal(s.terminalType, 'wt')
 })
 
@@ -124,13 +125,13 @@ test('custom launch commands can be added, selected, and deleted', () => {
   services.setSelectedLaunchId(created.id)
   let s = services.getLauncherSettings()
   assert.equal(s.launchCommand, 'claude --foo')
-  assert.equal(s.launchCommands.length, 5)
+  assert.equal(s.launchCommands.length, 3)
   // builtin cannot be deleted
   assert.equal(services.deleteLaunchCommand('lc-claude'), false)
   // custom can be deleted, selection falls back
   assert.equal(services.deleteLaunchCommand(created.id), true)
   s = services.getLauncherSettings()
-  assert.equal(s.launchCommands.length, 4)
+  assert.equal(s.launchCommands.length, 2)
   assert.equal(s.selectedLaunchId, 'lc-claude')
 })
 
