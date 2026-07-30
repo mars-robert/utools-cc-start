@@ -1918,6 +1918,27 @@ function getClaudeSettingsPath () {
   return path.join(os.homedir(), '.claude', 'settings.json')
 }
 
+function openClaudeSettingsFile () {
+  const filePath = getClaudeSettingsPath()
+  if (!fs.existsSync(filePath)) {
+    return { success: false, error: `文件不存在：${filePath}` }
+  }
+
+  try {
+    if (!window.utools || typeof window.utools.shellOpenPath !== 'function') {
+      return { success: false, error: '当前环境不支持打开文件' }
+    }
+
+    const error = window.utools.shellOpenPath(filePath)
+    if (typeof error === 'string' && error) {
+      return { success: false, error }
+    }
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error?.message || String(error) }
+  }
+}
+
 // 安全读取 JSON 文件；缺失/损坏均降级为 fallback，不抛异常
 function readJsonSafe (filePath, fallback) {
   try {
@@ -2561,6 +2582,9 @@ window.services = {
 
   // 读取当前 Claude settings.json
   readClaudeSettings: (...args) => loadEnvConfig().readCurrentClaudeSettings(...args),
+
+  // 使用系统默认应用打开 Claude settings.json
+  openClaudeSettingsFile,
 
   // ===== ccplugin：插件生态（商城 + 插件）=====
 

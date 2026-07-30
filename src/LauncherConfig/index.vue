@@ -11,6 +11,7 @@ const selectedCodexLaunchId = ref('')
 const selectedTerminalId = ref('')
 const terminalPaths = ref<Record<string, string>>({})
 const saved = ref(false)
+const WINDOWS_TERMINAL_RELEASES_URL = 'https://github.com/microsoft/terminal/releases'
 
 // 管理弹窗状态
 const showLaunchDialog = ref(false)
@@ -60,6 +61,14 @@ const selectTerminal = (id: string) => {
   selectedTerminalId.value = id
   window.services.setSelectedTerminalId(id)
   flashSaved()
+}
+
+const openWindowsTerminalReleases = () => {
+  if (window.utools && typeof window.utools.shellOpenExternal === 'function') {
+    window.utools.shellOpenExternal(WINDOWS_TERMINAL_RELEASES_URL)
+    return
+  }
+  window.open(WINDOWS_TERMINAL_RELEASES_URL, '_blank', 'noopener,noreferrer')
 }
 
 const saveTerminalPaths = () => {
@@ -216,7 +225,7 @@ onMounted(load)
       <div class="section-head">
         <div class="section-head-text">
           <h3 class="section-title">Claude 启动命令</h3>
-          <p class="section-desc">选择 Claude 启动时的默认命令，点击卡片即可切换</p>
+          <p class="section-desc">Claude 启动时使用的默认命令</p>
         </div>
         <button class="btn btn-primary" @click="openAddLaunch('claude')">+ 新增命令</button>
       </div>
@@ -227,15 +236,21 @@ onMounted(load)
           :key="c.id"
           class="launch-card"
           :class="{ active: selectedLaunchId === c.id }"
-          @click="selectLaunchCommand(c.id)"
         >
           <div class="card-top">
             <span class="card-name">{{ getDisplayName(c) }}</span>
             <span v-if="c.builtin" class="tag tag-gray">预设</span>
             <span v-else class="tag tag-blue">自定义</span>
             <div class="card-actions">
-              <span v-if="selectedLaunchId === c.id" class="tag tag-on"><i class="dot"></i>已选中</span>
-              <span v-else class="tag tag-off">未选中</span>
+              <span v-if="selectedLaunchId === c.id" class="tag tag-on"><i class="dot"></i>已生效</span>
+              <button
+                v-else
+                type="button"
+                class="tag tag-off status-action"
+                title="设为生效"
+                :aria-label="`将 ${getDisplayName(c)} 设为 Claude 生效命令`"
+                @click.stop="selectLaunchCommand(c.id)"
+              >未生效</button>
               <span v-if="!c.builtin" class="card-tools">
                 <button class="tool" title="编辑" @click.stop="openEditLaunch(c, 'claude')">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -274,7 +289,7 @@ onMounted(load)
       <div class="section-head">
         <div class="section-head-text">
           <h3 class="section-title">Codex 启动命令</h3>
-          <p class="section-desc">选择 Codex 启动时的默认命令，点击卡片即可切换</p>
+          <p class="section-desc">Codex 启动时使用的默认命令</p>
         </div>
         <button class="btn btn-primary" @click="openAddLaunch('codex')">+ 新增命令</button>
       </div>
@@ -285,15 +300,21 @@ onMounted(load)
           :key="c.id"
           class="launch-card"
           :class="{ active: selectedCodexLaunchId === c.id }"
-          @click="selectCodexLaunchCommand(c.id)"
         >
           <div class="card-top">
             <span class="card-name">{{ getDisplayName(c) }}</span>
             <span v-if="c.builtin" class="tag tag-gray">预设</span>
             <span v-else class="tag tag-blue">自定义</span>
             <div class="card-actions">
-              <span v-if="selectedCodexLaunchId === c.id" class="tag tag-on"><i class="dot"></i>已选中</span>
-              <span v-else class="tag tag-off">未选中</span>
+              <span v-if="selectedCodexLaunchId === c.id" class="tag tag-on"><i class="dot"></i>已生效</span>
+              <button
+                v-else
+                type="button"
+                class="tag tag-off status-action"
+                title="设为生效"
+                :aria-label="`将 ${getDisplayName(c)} 设为 Codex 生效命令`"
+                @click.stop="selectCodexLaunchCommand(c.id)"
+              >未生效</button>
               <span v-if="!c.builtin" class="card-tools">
                 <button class="tool" title="编辑" @click.stop="openEditLaunch(c, 'codex')">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -332,7 +353,7 @@ onMounted(load)
       <div class="section-head">
         <div class="section-head-text">
           <h3 class="section-title">终端配置</h3>
-          <p class="section-desc">选择默认终端程序，点击卡片切换，可自定义路径</p>
+          <p class="section-desc">启动项目时使用的默认终端程序与路径</p>
         </div>
         <div class="section-actions">
           <button class="btn btn-primary" @click="openAddTerminal">+ 新增终端</button>
@@ -349,7 +370,6 @@ onMounted(load)
           :key="t.id"
           class="terminal-item"
           :class="{ active: selectedTerminalId === t.id }"
-          @click="selectTerminal(t.id)"
         >
           <div class="terminal-header">
             <div class="terminal-info">
@@ -359,8 +379,29 @@ onMounted(load)
             </div>
             <div class="terminal-status">
               <div class="card-actions">
-                <span v-if="selectedTerminalId === t.id" class="tag tag-on"><i class="dot"></i>已选中</span>
-                <span v-else class="tag tag-off">未选中</span>
+                <button
+                  v-if="t.id === 'bt-wt'"
+                  type="button"
+                  class="terminal-download"
+                  title="前往 GitHub 下载 Windows Terminal"
+                  aria-label="前往 GitHub 下载 Windows Terminal"
+                  @click.stop="openWindowsTerminalReleases"
+                >
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3.28-.36 6.72-1.61 6.72-7.25A5.65 5.65 0 0 0 19.22 3.3 5.27 5.27 0 0 0 19.13.9S17.95.53 15 2.38a13.38 13.38 0 0 0-7 0C5.05.53 3.87.9 3.87.9a5.27 5.27 0 0 0-.09 2.4 5.65 5.65 0 0 0-1.5 3.95c0 5.63 3.44 6.88 6.72 7.25A4.8 4.8 0 0 0 9 18v4" />
+                    <path d="M9 18c-4.51 2-5-2-7-2" />
+                  </svg>
+                  <span>GitHub 下载</span>
+                </button>
+                <span v-if="selectedTerminalId === t.id" class="tag tag-on"><i class="dot"></i>已生效</span>
+                <button
+                  v-else
+                  type="button"
+                  class="tag tag-off status-action"
+                  title="设为生效"
+                  :aria-label="`将 ${t.label} 设为生效终端`"
+                  @click.stop="selectTerminal(t.id)"
+                >未生效</button>
                 <span v-if="!t.builtin" class="card-tools">
                   <button class="tool" title="编辑" @click.stop="openEditTerminal(t)">
                     <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -513,7 +554,7 @@ onMounted(load)
   border: 1px solid var(--border-color);
   border-radius: var(--card-radius);
   padding: 10px 12px;
-  cursor: pointer;
+  cursor: default;
   box-shadow: 0 1px 3px rgba(0, 0, 0, .08), 0 1px 2px rgba(0, 0, 0, .04);
   transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease, background .18s ease;
 }
@@ -584,7 +625,52 @@ onMounted(load)
   align-items: center;
   gap: var(--spacing-sm);
   flex: 0 0 auto;
-  overflow: hidden;
+  overflow: visible;
+}
+
+.terminal-download {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: var(--card-bg);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .16s ease, background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+
+.terminal-download:hover,
+.terminal-download:focus-visible {
+  border-color: #24292f;
+  background: #24292f;
+  color: #fff;
+  box-shadow: 0 3px 10px rgba(36, 41, 47, .24);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.terminal-download:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 4px rgba(36, 41, 47, .2);
+}
+
+@media (prefers-color-scheme: dark) {
+  .terminal-download:hover,
+  .terminal-download:focus-visible {
+    border-color: #f0f6fc;
+    background: #f0f6fc;
+    color: #161b22;
+    box-shadow: 0 3px 12px rgba(240, 246, 252, .18);
+  }
 }
 
 .terminal-body {
@@ -602,7 +688,7 @@ onMounted(load)
   border: 1px solid var(--border-color);
   border-radius: var(--card-radius);
   padding: 10px 12px;
-  cursor: pointer;
+  cursor: default;
   box-shadow: 0 1px 3px rgba(0, 0, 0, .08), 0 1px 2px rgba(0, 0, 0, .04);
   transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease, background .18s ease;
 }
@@ -719,11 +805,52 @@ onMounted(load)
   }
 }
 .tag-off {
+  display: inline-flex;
+  align-items: center;
   padding: 4px 9px;
   border-radius: 999px;
+  border: 1px solid transparent;
   background: var(--bg-hover);
   color: var(--text-tertiary);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
   font-weight: 500;
+}
+.status-action {
+  cursor: pointer;
+  transition: color .16s ease, background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+.status-action:hover,
+.status-action:focus-visible {
+  color: var(--active-color);
+  background: rgba(var(--active-color-rgb), .12);
+  border-color: rgba(var(--active-color-rgb), .62);
+  box-shadow: 0 0 0 3px rgba(var(--active-color-rgb), .12), 0 0 14px rgba(var(--active-color-rgb), .42);
+  outline: none;
+}
+.status-action:hover {
+  animation: launcher-status-glow 1.3s ease-in-out infinite;
+  transform: translateY(-1px);
+}
+.status-action:active {
+  animation: none;
+  transform: translateY(0);
+  background: rgba(var(--active-color-rgb), .2);
+  box-shadow: 0 0 0 2px rgba(var(--active-color-rgb), .14), 0 0 8px rgba(var(--active-color-rgb), .32);
+}
+@keyframes launcher-status-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(var(--active-color-rgb), .1), 0 0 8px rgba(var(--active-color-rgb), .28);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(var(--active-color-rgb), .16), 0 0 17px rgba(var(--active-color-rgb), .54);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-action:hover {
+    animation: none;
+  }
 }
 .tag-on {
   display: inline-flex;
@@ -731,6 +858,7 @@ onMounted(load)
   gap: 5px;
   padding: 4px 9px;
   border-radius: 999px;
+  border: 1px solid transparent;
   background: rgba(var(--active-color-rgb), .18);
   color: var(--active-color);
   font-weight: 600;

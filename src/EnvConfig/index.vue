@@ -12,29 +12,38 @@
     <div class="env-head">
       <div class="env-head-text">
         <h3 class="env-title">Claude Code 环境配置</h3>
-        <p class="env-desc">管理多个 Claude Code 环境预设，点击卡片即可切换</p>
+        <p class="env-desc">管理 Claude Code API 环境预设与 settings.json</p>
       </div>
       <button class="btn btn-primary env-add" @click="handleCreate">+ 新增配置</button>
     </div>
 
     <div class="env-grid">
-      <!-- 原始配置 -->
-      <div class="env-card" :class="{ active: !currentStoreId }" @click="handleResetToOriginal">
+      <!-- 当前 settings.json 文件 -->
+      <div
+        class="env-card settings-card"
+        role="button"
+        tabindex="0"
+        title="打开 settings.json"
+        aria-label="打开 Claude Code settings.json"
+        @click="openSettingsFile"
+        @keydown.enter.prevent="openSettingsFile"
+        @keydown.space.prevent="openSettingsFile"
+      >
         <div class="card-top">
-          <span class="card-name">原始配置</span>
-          <span class="tag tag-gray">系统</span>
+          <span class="card-name">settings.json</span>
+          <span class="tag tag-gray">文件</span>
           <div class="card-actions">
-            <span v-if="!currentStoreId" class="tag tag-on"><i class="dot"></i>已生效</span>
-            <span v-else class="tag tag-off">未生效</span>
+            <span class="settings-open-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              </svg>
+            </span>
           </div>
         </div>
         <div class="card-body">
           <div
             v-if="ori('ANTHROPIC_BASE_URL')"
             class="kv"
-            :class="{ expanded: expandedKey === 'ori:url' }"
-            :data-full="ori('ANTHROPIC_BASE_URL')"
-            @click.stop="toggleExpand('ori:url')"
           >
             <span class="ki" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
@@ -44,9 +53,6 @@
           <div
             v-if="ori('ANTHROPIC_AUTH_TOKEN')"
             class="kv"
-            :class="{ expanded: expandedKey === 'ori:token' }"
-            :data-full="ori('ANTHROPIC_AUTH_TOKEN')"
-            @click.stop="toggleExpand('ori:token')"
           >
             <span class="ki" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3M18 5l2 2M15 8l2 2"/></svg>
@@ -59,7 +65,7 @@
             </span>
             <span class="v">{{ ori('ANTHROPIC_MODEL') }}</span>
           </div>
-          <div v-if="!hasOri" class="kv-empty">系统默认 settings.json</div>
+          <div v-if="!hasOri" class="kv-empty">暂无 API 环境配置</div>
         </div>
       </div>
 
@@ -69,14 +75,20 @@
         :key="store.id"
         class="env-card"
         :class="{ active: store.using }"
-        @click="handleSwitchConfig(store.id)"
       >
         <div class="card-top">
           <span class="card-name">{{ store.title }}</span>
           <span v-if="getPresetLabel(store)" class="tag tag-preset">{{ getPresetLabel(store) }}</span>
           <div class="card-actions">
             <span v-if="store.using" class="tag tag-on"><i class="dot"></i>已生效</span>
-            <span v-else class="tag tag-off">未生效</span>
+            <button
+              v-else
+              type="button"
+              class="tag tag-off status-action"
+              title="设为生效"
+              :aria-label="`将 ${store.title} 设为生效配置`"
+              @click.stop="handleSwitchConfig(store.id)"
+            >未生效</button>
             <span class="card-tools">
               <button class="tool" title="编辑" @click.stop="handleEdit(store)">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -284,11 +296,15 @@ export default {
       if (r.success) { this.notify('已切换配置'); this.loadData(); this.loadOriginalConfig() }
       else this.notify(r.error || '切换失败', 'error')
     },
-    handleResetToOriginal () {
-      if (!this.currentStoreId) return
-      const r = window.services.resetToOriginalConfig()
-      if (r.success) { this.notify('已恢复原始配置'); this.loadData() }
-      else this.notify(r.error || '操作失败', 'error')
+    openSettingsFile () {
+      try {
+        const result = window.services.openClaudeSettingsFile?.()
+        if (!result?.success) {
+          this.notify(result?.error || '无法打开 settings.json', 'error')
+        }
+      } catch (error) {
+        this.notify(error?.message || '无法打开 settings.json', 'error')
+      }
     },
     handleDelete (store) {
       if (!confirm(`确定删除配置「${store.title}」吗？`)) return
@@ -343,15 +359,49 @@ export default {
   border: 1px solid var(--border-color);
   border-radius: var(--card-radius);
   padding: 10px 12px;
-  cursor: pointer;
+  cursor: default;
   box-shadow: 0 1px 3px rgba(0, 0, 0, .08), 0 1px 2px rgba(0, 0, 0, .04);
   transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease, background .18s ease;
 }
 /* hover：保持卡片本色（不染背景，避免与全局背景糊在一起），靠边框+阴影+上浮反馈 */
+.settings-card {
+  cursor: pointer;
+}
+
 .env-card:hover {
   border-color: var(--primary-color);
   box-shadow: 0 8px 22px rgba(0, 0, 0, .13), 0 3px 6px rgba(0, 0, 0, .07);
   transform: translateY(-2px);
+}
+
+.settings-card:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
+.settings-card .card-name {
+  font-family: 'Consolas', 'Monaco', monospace;
+}
+
+.settings-open-icon {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--text-tertiary);
+  transition: color .15s ease, background .15s ease, border-color .15s ease, transform .15s ease;
+}
+
+.settings-card:hover .settings-open-icon,
+.settings-card:focus-visible .settings-open-icon {
+  border-color: var(--primary-color);
+  background: var(--primary-color);
+  color: #fff;
+  transform: translate(1px, -1px);
 }
 /* 生效：绿色卡片背景，辨识度高，与任何全局背景都拉开差距 */
 .env-card.active {
@@ -365,7 +415,6 @@ export default {
   box-shadow: 0 8px 24px rgba(var(--active-green-rgb), .34);
   transform: translateY(-2px);
 }
-
 @media (prefers-color-scheme: dark) {
   .env-card {
     --active-green: #34c98a;
@@ -407,11 +456,52 @@ export default {
 .tag-off {
   flex: 0 0 auto;
   padding: 4px 9px; border-radius: 999px;
-  background: var(--bg-hover); color: var(--text-tertiary); font-weight: 500;
+  border: 1px solid transparent;
+  background: var(--bg-hover); color: var(--text-tertiary);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 500;
+}
+.status-action {
+  cursor: pointer;
+  transition: color .16s ease, background .16s ease, border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+.status-action:hover,
+.status-action:focus-visible {
+  color: var(--active-green);
+  background: rgba(var(--active-green-rgb), .12);
+  border-color: rgba(var(--active-green-rgb), .62);
+  box-shadow: 0 0 0 3px rgba(var(--active-green-rgb), .12), 0 0 14px rgba(var(--active-green-rgb), .38);
+  outline: none;
+}
+.status-action:hover {
+  animation: env-status-glow 1.3s ease-in-out infinite;
+  transform: translateY(-1px);
+}
+.status-action:active {
+  animation: none;
+  transform: translateY(0);
+  background: rgba(var(--active-green-rgb), .2);
+  box-shadow: 0 0 0 2px rgba(var(--active-green-rgb), .14), 0 0 8px rgba(var(--active-green-rgb), .3);
+}
+@keyframes env-status-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(var(--active-green-rgb), .1), 0 0 8px rgba(var(--active-green-rgb), .26);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(var(--active-green-rgb), .16), 0 0 17px rgba(var(--active-green-rgb), .5);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-action:hover {
+    animation: none;
+  }
 }
 .tag-on {
   display: inline-flex; align-items: center; gap: 5px;
   padding: 4px 9px; border-radius: 999px;
+  border: 1px solid transparent;
   background: rgba(var(--active-green-rgb), .18);
   color: var(--active-green); font-weight: 600;
 }

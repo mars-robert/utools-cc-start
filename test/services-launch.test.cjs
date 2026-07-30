@@ -4,9 +4,10 @@ const path = require('node:path')
 const test = require('node:test')
 const vm = require('node:vm')
 
-function loadServices ({ platform = 'win32', exists = () => true, store = {} } = {}) {
+function loadServices ({ platform = 'win32', exists = () => true, shellOpenPath = () => '', store = {} } = {}) {
   const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'preload', 'services.js'), 'utf8')
   const spawns = []
+  const openedPaths = []
   const sandbox = {
     require (id) {
       if (id === 'node:fs') {
@@ -44,14 +45,37 @@ function loadServices ({ platform = 'win32', exists = () => true, store = {} } =
           getItem: (k) => (k in store ? store[k] : null),
           setItem: (k, v) => { store[k] = v }
         },
-        getPath: () => 'C:\\Users\\tester\\Downloads'
+        getPath: () => 'C:\\Users\\tester\\Downloads',
+        shellOpenPath: (filePath) => {
+          openedPaths.push(filePath)
+          return shellOpenPath(filePath)
+        }
       }
     }
   }
 
   vm.runInNewContext(source, sandbox, { filename: 'services.js' })
-  return { services: sandbox.window.services, spawns, store }
+  return { services: sandbox.window.services, spawns, openedPaths, store }
 }
+
+test('openClaudeSettingsFile opens settings.json with the system default application', () => {
+  const settingsPath = 'C:\\Users\\tester\\.claude\\settings.json'
+  const { services, openedPaths } = loadServices({
+    exists: (filePath) => filePath === settingsPath
+  })
+
+  assert.equal(services.openClaudeSettingsFile().success, true)
+  assert.deepEqual(openedPaths, [settingsPath])
+})
+
+test('openClaudeSettingsFile reports a missing settings.json', () => {
+  const { services, openedPaths } = loadServices({ exists: () => false })
+
+  const result = services.openClaudeSettingsFile()
+  assert.equal(result.success, false)
+  assert.match(result.error, /settings\.json/)
+  assert.deepEqual(openedPaths, [])
+})
 
 test('launchProject starts Windows Terminal with -d working directory and a direct PowerShell command', () => {
   const cwd = 'D:\\code\\demo project'
