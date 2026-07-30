@@ -12,8 +12,10 @@ function loadActiveSessions () {
   return require('./active-sessions.cjs')
 }
 
-// 环境配置管理（新版本 - ccmate 风格）
-const envConfig = require('./env-config-new.js')
+// 惰性加载环境配置，避免预加载模块初始化时产生额外依赖和文件系统访问
+function loadEnvConfig () {
+  return require('./env-config-new.js')
+}
 
 // ===== Claude Code 项目启动器：设置存储 =====
 
@@ -594,7 +596,7 @@ function launchProject (cwd, command, options) {
 
 // 内置命令库
 const BUILTIN_COMMANDS = [
-  // Claude CLI
+  // ============ Claude CLI ============
   {
     id: 'claude-upgrade',
     name: '升级 Claude CLI',
@@ -619,8 +621,24 @@ const BUILTIN_COMMANDS = [
     type: 'builtin',
     needsProjectDir: false
   },
+  {
+    id: 'claude-config',
+    name: 'Claude 配置',
+    command: 'claude config',
+    description: '管理 Claude CLI 配置',
+    type: 'builtin',
+    needsProjectDir: false
+  },
+  {
+    id: 'claude-auth',
+    name: 'Claude 登录',
+    command: 'claude auth login',
+    description: '登录 Claude CLI 账户',
+    type: 'builtin',
+    needsProjectDir: false
+  },
 
-  // OpenSpec
+  // ============ OpenSpec ============
   {
     id: 'openspec-upgrade',
     name: '升级 OpenSpec',
@@ -638,18 +656,18 @@ const BUILTIN_COMMANDS = [
     needsProjectDir: false
   },
   {
-    id: 'openspec-status',
-    name: 'OpenSpec 状态',
-    command: 'openspec status',
-    description: '查看当前项目的 OpenSpec 变更状态',
-    type: 'builtin',
-    needsProjectDir: true
-  },
-  {
     id: 'openspec-init',
     name: 'OpenSpec 初始化',
     command: 'openspec init --tools none',
     description: '在当前项目初始化 OpenSpec',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
+    id: 'openspec-status',
+    name: 'OpenSpec 状态',
+    command: 'openspec status',
+    description: '查看当前项目的 OpenSpec 变更状态',
     type: 'builtin',
     needsProjectDir: true
   },
@@ -661,8 +679,56 @@ const BUILTIN_COMMANDS = [
     type: 'builtin',
     needsProjectDir: true
   },
+  {
+    id: 'openspec-apply',
+    name: 'OpenSpec 应用变更',
+    command: 'openspec apply',
+    description: '交互式应用 OpenSpec 变更',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
+    id: 'openspec-diff',
+    name: 'OpenSpec 查看差异',
+    command: 'openspec diff',
+    description: '查看变更的详细差异',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
+    id: 'openspec-clean',
+    name: 'OpenSpec 清理',
+    command: 'openspec clean',
+    description: '清理已应用的变更记录',
+    type: 'builtin',
+    needsProjectDir: true
+  },
 
-  // NPM
+  // ============ NPM ============
+  {
+    id: 'npm-install',
+    name: 'NPM 安装依赖',
+    command: 'npm install',
+    description: '安装项目依赖',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
+    id: 'npm-update',
+    name: 'NPM 更新依赖',
+    command: 'npm update',
+    description: '更新项目依赖到最新版本',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
+    id: 'npm-outdated',
+    name: 'NPM 检查过期包',
+    command: 'npm outdated',
+    description: '检查项目中过期的依赖包',
+    type: 'builtin',
+    needsProjectDir: true
+  },
   {
     id: 'npm-cache-clean',
     name: '清理 npm 缓存',
@@ -680,7 +746,7 @@ const BUILTIN_COMMANDS = [
     needsProjectDir: false
   },
 
-  // Git
+  // ============ Git ============
   {
     id: 'git-status',
     name: 'Git 状态',
@@ -698,6 +764,14 @@ const BUILTIN_COMMANDS = [
     needsProjectDir: true
   },
   {
+    id: 'git-push',
+    name: 'Git 推送代码',
+    command: 'git push',
+    description: '推送本地提交到远程仓库',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
     id: 'git-branch',
     name: 'Git 查看分支',
     command: 'git branch -a',
@@ -710,6 +784,30 @@ const BUILTIN_COMMANDS = [
     name: 'Git 提交历史',
     command: 'git log --oneline -10',
     description: '查看最近 10 条提交历史',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
+    id: 'git-diff',
+    name: 'Git 查看变更',
+    command: 'git diff',
+    description: '查看工作区的文件变更',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
+    id: 'git-stash',
+    name: 'Git 暂存变更',
+    command: 'git stash',
+    description: '暂存当前工作区的变更',
+    type: 'builtin',
+    needsProjectDir: true
+  },
+  {
+    id: 'git-stash-pop',
+    name: 'Git 恢复暂存',
+    command: 'git stash pop',
+    description: '恢复最近暂存的变更',
     type: 'builtin',
     needsProjectDir: true
   }
@@ -2432,37 +2530,37 @@ window.services = {
   // ===== API 环境配置（新版 - ccmate 风格）=====
 
   // 获取所有配置
-  getStores: envConfig.getStores,
+  getStores: (...args) => loadEnvConfig().getStores(...args),
 
   // 获取单个配置
-  getStore: envConfig.getStore,
+  getStore: (...args) => loadEnvConfig().getStore(...args),
 
   // 获取当前生效配置
-  getCurrentStore: envConfig.getCurrentStore,
+  getCurrentStore: (...args) => loadEnvConfig().getCurrentStore(...args),
 
   // 创建配置
-  createConfig: envConfig.createConfig,
+  createConfig: (...args) => loadEnvConfig().createConfig(...args),
 
   // 更新配置
-  updateConfig: envConfig.updateConfig,
+  updateConfig: (...args) => loadEnvConfig().updateConfig(...args),
 
   // 删除配置
-  deleteConfig: envConfig.deleteConfig,
+  deleteConfig: (...args) => loadEnvConfig().deleteConfig(...args),
 
   // 切换配置
-  setUsingConfig: envConfig.setUsingConfig,
+  setUsingConfig: (...args) => loadEnvConfig().setUsingConfig(...args),
 
   // 重置到原始配置
-  resetToOriginalConfig: envConfig.resetToOriginalConfig,
+  resetToOriginalConfig: (...args) => loadEnvConfig().resetToOriginalConfig(...args),
 
   // 获取预设模板
-  getPresets: envConfig.getPresets,
+  getPresets: (...args) => loadEnvConfig().getPresets(...args),
 
   // 应用预设模板
-  applyPreset: envConfig.applyPreset,
+  applyPreset: (...args) => loadEnvConfig().applyPreset(...args),
 
   // 读取当前 Claude settings.json
-  readClaudeSettings: envConfig.readCurrentClaudeSettings,
+  readClaudeSettings: (...args) => loadEnvConfig().readCurrentClaudeSettings(...args),
 
   // ===== ccplugin：插件生态（商城 + 插件）=====
 

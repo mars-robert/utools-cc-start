@@ -55,8 +55,10 @@ const selectCodexLaunchCommand = (id: string) => {
   window.services.setSelectedCodexLaunchId(id)
 }
 
-const onSelectTerminal = () => {
-  window.services.setSelectedTerminalId(selectedTerminalId.value)
+const selectTerminal = (id: string) => {
+  if (selectedTerminalId.value === id) return
+  selectedTerminalId.value = id
+  window.services.setSelectedTerminalId(id)
   flashSaved()
 }
 
@@ -81,6 +83,24 @@ const saveTerminalPaths = () => {
 const resetTerminalPath = (t: any) => {
   if (!t.builtin) return
   window.services.clearTerminalPathOverride(t.id)
+  load()
+  flashSaved()
+}
+
+const saveTerminalPath = (t: any) => {
+  if (!t.builtin) return
+  const s = window.services.getLauncherSettings()
+  const defaultT = s.terminals.find((x: any) => x.id === t.id)
+  const defaultPath = defaultT?.resolvedPath || ''
+  const currentPath = terminalPaths.value[t.id] || ''
+
+  // 如果用户修改了路径，保存覆盖
+  if (currentPath && currentPath !== defaultPath) {
+    window.services.setTerminalPathOverride(t.id, currentPath)
+  } else if (!currentPath) {
+    // 如果清空了路径，恢复默认
+    window.services.clearTerminalPathOverride(t.id)
+  }
   load()
   flashSaved()
 }
@@ -308,41 +328,92 @@ onMounted(load)
     </div>
 
     <!-- 终端 -->
-    <div v-if="isWindows" class="section card">
-      <h3 class="section-title">终端</h3>
-      <div class="radio-list">
-        <div v-for="t in terminals" :key="t.id" class="radio-item" :class="{ selected: selectedTerminalId === t.id }">
-          <input
-            type="radio"
-            :id="'bt-' + t.id"
-            :value="t.id"
-            v-model="selectedTerminalId"
-            @change="onSelectTerminal"
-          />
-          <label :for="'bt-' + t.id">
-            <span class="radio-label">{{ t.label }}</span>
-            <span v-if="t.builtin" class="badge-preset">预设</span>
-            <span v-else class="badge">自定义</span>
-          </label>
-          <div class="path-input-group">
-            <input
-              v-model="terminalPaths[t.id]"
-              class="path-input"
-              :placeholder="t.builtin ? '系统默认路径' : '可执行文件路径'"
-              :disabled="!t.builtin && !t.id.startsWith('bt-custom')"
-            />
-            <button v-if="t.builtin" class="btn btn-sm" @click="resetTerminalPath(t)">恢复默认</button>
-            <button v-if="!t.builtin" class="btn btn-sm" @click="openEditTerminal(t)">编辑</button>
-            <button v-if="!t.builtin" class="btn btn-sm btn-danger" @click="deleteTerminal(t)">删除</button>
-          </div>
+    <div v-if="isWindows" class="section">
+      <div class="section-head">
+        <div class="section-head-text">
+          <h3 class="section-title">终端配置</h3>
+          <p class="section-desc">选择默认终端程序，点击卡片切换，可自定义路径</p>
+        </div>
+        <div class="section-actions">
+          <button class="btn btn-primary" @click="openAddTerminal">+ 新增终端</button>
+          <button class="btn btn-success" @click="saveTerminalPaths">
+            保存终端路径
+            <span v-if="saved" class="saved-badge">✓ 已保存</span>
+          </button>
         </div>
       </div>
-      <div class="actions-row">
-        <button class="btn btn-primary" @click="saveTerminalPaths">
-          保存路径
-          <span v-if="saved" class="saved-badge">✓ 已保存</span>
-        </button>
-        <button class="btn" @click="openAddTerminal">+ 新增自定义终端</button>
+
+      <div class="terminal-list">
+        <div
+          v-for="t in terminals"
+          :key="t.id"
+          class="terminal-item"
+          :class="{ active: selectedTerminalId === t.id }"
+          @click="selectTerminal(t.id)"
+        >
+          <div class="terminal-header">
+            <div class="terminal-info">
+              <span class="terminal-name">{{ t.label }}</span>
+              <span v-if="t.builtin" class="tag tag-gray">预设</span>
+              <span v-else class="tag tag-blue">自定义</span>
+            </div>
+            <div class="terminal-status">
+              <div class="card-actions">
+                <span v-if="selectedTerminalId === t.id" class="tag tag-on"><i class="dot"></i>已选中</span>
+                <span v-else class="tag tag-off">未选中</span>
+                <span v-if="!t.builtin" class="card-tools">
+                  <button class="tool" title="编辑" @click.stop="openEditTerminal(t)">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                    </svg>
+                  </button>
+                  <button class="tool tool-del" title="删除" @click.stop="deleteTerminal(t)">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M3 6h18" />
+                      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                      <path d="M10 11v6M14 11v6" />
+                    </svg>
+                  </button>
+                </span>
+              </div>
+            </div>
+          </div>
+          <div class="terminal-body">
+            <div v-if="t.builtin" class="path-edit-full">
+              <div class="path-input-wrapper">
+                <span class="path-icon-inner" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" />
+                    <circle cx="12" cy="10" r="3" />
+                  </svg>
+                </span>
+                <input
+                  v-model="terminalPaths[t.id]"
+                  class="path-input-full"
+                  placeholder="自定义路径（留空使用默认）"
+                  @click.stop
+                />
+              </div>
+              <button class="btn-update" @click.stop="saveTerminalPath(t)">
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
+                </svg>
+                <span>更新</span>
+              </button>
+            </div>
+            <div v-else class="path-display">
+              <span class="path-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" />
+                  <circle cx="12" cy="10" r="3" />
+                </svg>
+              </span>
+              <span class="path-text">{{ terminalPaths[t.id] || '使用系统默认路径' }}</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -386,129 +457,530 @@ onMounted(load)
   </div>
 </template>
 
-<style scoped><style scoped>
-.conf { box-sizing: border-box; }
+<style scoped>
+.conf {
+  padding: var(--spacing-md) var(--spacing-sm);
+  max-width: 100%;
+  overflow-x: hidden;
+  box-sizing: border-box;
+}
 
-.section { margin-bottom: var(--spacing-xl); }
+.section { margin-bottom: var(--spacing-lg); }
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-md);
+  gap: var(--spacing-sm);
+}
+.section-head-text { flex: 1 1 auto; min-width: 0; }
+.section-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  flex: 0 0 auto;
+}
 .section-title {
-  margin: 0 0 var(--spacing-lg);
+  margin: 0;
   font-size: var(--font-size-lg);
   font-weight: 600;
   color: var(--text-primary);
 }
-
-.radio-list { display: flex; flex-direction: column; gap: var(--spacing-sm); margin-bottom: var(--spacing-lg); }
-
-.radio-item {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-md);
-  padding: var(--spacing-md);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  transition: all 0.2s ease;
-  flex-wrap: wrap;
-}
-.radio-item:hover { background: var(--bg-hover); }
-.radio-item.selected {
-  background: color-mix(in srgb, var(--primary-color) 8%, transparent);
-  border-color: var(--primary-color);
+.section-desc {
+  margin: 4px 0 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
 }
 
-.radio-item input[type="radio"] {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 18px; height: 18px;
-  border: 2px solid var(--border-color);
-  border-radius: 50%;
-  cursor: pointer;
-  flex: 0 0 auto;
-  position: relative;
-  transition: border-color 0.2s ease;
-}
-.radio-item input[type="radio"]:checked {
-  border-color: var(--primary-color);
-}
-.radio-item input[type="radio"]:checked::after {
-  content: '';
-  position: absolute;
-  inset: 3px;
-  background: var(--primary-color);
-  border-radius: 50%;
-}
-
-.radio-item label {
-  display: flex;
-  align-items: center;
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: var(--spacing-sm);
-  cursor: pointer;
-  flex: 1 1 auto;
-  min-width: 0;
 }
 
-.radio-content {
+/* 终端配置使用列表布局，每项占满一行 */
+.terminal-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+}
+
+.terminal-item {
+  --active-color: #1976d2;
+  --active-color-rgb: 25, 118, 210;
+  --active-bg: #e3f2fd;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--card-radius);
+  padding: 10px 12px;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .08), 0 1px 2px rgba(0, 0, 0, .04);
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease, background .18s ease;
+}
+
+.terminal-item:hover {
+  border-color: var(--primary-color);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .13), 0 3px 6px rgba(0, 0, 0, .07);
+  transform: translateY(-2px);
+}
+
+.terminal-item.active {
+  border-color: var(--active-color);
+  background: var(--active-bg);
+  box-shadow: 0 4px 14px rgba(var(--active-color-rgb), .22);
+}
+
+.terminal-item.active:hover {
+  border-color: var(--active-color);
+  background: #bbdefb;
+  box-shadow: 0 8px 24px rgba(var(--active-color-rgb), .34);
+  transform: translateY(-2px);
+}
+
+@media (prefers-color-scheme: dark) {
+  .terminal-item {
+    --active-color: #42a5f5;
+    --active-color-rgb: 66, 165, 245;
+    --active-bg: #0d2a42;
+  }
+  .terminal-item:hover {
+    border-color: var(--primary-color);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, .55);
+  }
+  .terminal-item.active {
+    box-shadow: 0 6px 20px rgba(var(--active-color-rgb), .35);
+  }
+  .terminal-item.active:hover {
+    background: #103a5e;
+    box-shadow: 0 10px 28px rgba(var(--active-color-rgb), .45);
+  }
+}
+
+.terminal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin-bottom: 8px;
+}
+
+.terminal-info {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
   flex: 1 1 auto;
   min-width: 0;
 }
 
-.radio-label {
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-weight: 400;
+.terminal-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
-.radio-detail {
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: var(--font-size-base);
+.terminal-status {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.terminal-body {
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+/* 注意：uTools 老内核不支持 color-mix()，全部用 rgba/hex 兜底 */
+.launch-card,
+.terminal-card {
+  --active-color: #1976d2;
+  --active-color-rgb: 25, 118, 210;
+  --active-bg: #e3f2fd;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--card-radius);
+  padding: 10px 12px;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .08), 0 1px 2px rgba(0, 0, 0, .04);
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease, background .18s ease;
+}
+
+.launch-card:hover,
+.terminal-card:hover {
+  border-color: var(--primary-color);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .13), 0 3px 6px rgba(0, 0, 0, .07);
+  transform: translateY(-2px);
+}
+
+.launch-card.active,
+.terminal-card.active {
+  border-color: var(--active-color);
+  background: var(--active-bg);
+  box-shadow: 0 4px 14px rgba(var(--active-color-rgb), .22);
+}
+
+.launch-card.active:hover,
+.terminal-card.active:hover {
+  border-color: var(--active-color);
+  background: #bbdefb;
+  box-shadow: 0 8px 24px rgba(var(--active-color-rgb), .34);
+  transform: translateY(-2px);
+}
+
+@media (prefers-color-scheme: dark) {
+  .launch-card,
+  .terminal-card {
+    --active-color: #42a5f5;
+    --active-color-rgb: 66, 165, 245;
+    --active-bg: #0d2a42;
+  }
+  .launch-card:hover,
+  .terminal-card:hover {
+    border-color: var(--primary-color);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, .55);
+  }
+  .launch-card.active,
+  .terminal-card.active {
+    box-shadow: 0 6px 20px rgba(var(--active-color-rgb), .35);
+  }
+  .launch-card.active:hover,
+  .terminal-card.active:hover {
+    background: #103a5e;
+    box-shadow: 0 10px 28px rgba(var(--active-color-rgb), .45);
+  }
+}
+
+.card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-height: 28px;
+}
+
+.card-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 默认收起（宽度 0），负 margin 抵消父级 gap 让标签贴右；hover 展开推动标签左移 */
+.card-tools {
+  display: inline-flex;
+  gap: 4px;
+  max-width: 0;
+  margin-left: -6px;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease, margin-left 0.28s ease;
+}
+
+.launch-card:hover .card-tools,
+.terminal-item:hover .card-tools {
+  max-width: 80px;
+  margin-left: 0;
+  opacity: 1;
+}
+
+.card-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
   color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 5px;
   font-weight: 500;
 }
-
-.badge {
-  font-size: 11px; padding: 1px 6px; border-radius: 4px;
-  background: color-mix(in srgb, var(--primary-color) 14%, transparent); color: var(--primary-color); font-weight: 400;
+.tag-gray {
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
 }
-.badge-preset {
-  font-size: 11px; padding: 1px 6px; border-radius: 4px;
-  background: var(--bg-hover); color: var(--text-tertiary);
+.tag-blue {
+  background: rgba(25, 118, 210, 0.14);
+  color: #1976d2;
+}
+@media (prefers-color-scheme: dark) {
+  .tag-blue {
+    background: rgba(66, 165, 245, 0.18);
+    color: #42a5f5;
+  }
+}
+.tag-off {
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+.tag-on {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: rgba(var(--active-color-rgb), .18);
+  color: var(--active-color);
+  font-weight: 600;
+}
+.tag-on .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--active-color);
+  box-shadow: 0 0 0 3px rgba(var(--active-color-rgb), .22);
 }
 
-.radio-actions { display: flex; gap: var(--spacing-xs); flex: 0 0 auto; }
+.tool {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .15s ease;
+  padding: 0;
+}
+.tool:hover {
+  background: var(--primary-color);
+  border-color: var(--primary-color);
+  color: #fff;
+}
+.tool-del:hover {
+  background: #e53935;
+  border-color: #e53935;
+  color: #fff;
+}
 
-.path-input-group {
+.card-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.kv {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+}
+
+.ki {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+}
+
+.v {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-family: 'Consolas', 'Monaco', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.path-edit-full {
   display: flex;
   gap: var(--spacing-sm);
   align-items: center;
-  flex: 1 1 100%;
-  margin-top: var(--spacing-sm);
 }
-.path-input {
+
+.path-input-wrapper {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
-  padding: 8px 10px;
+}
+
+.path-icon-inner {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.path-input-full {
+  width: 100%;
+  padding: 6px 8px 6px 32px;
   font-size: var(--font-size-sm);
   font-family: 'Consolas', 'Monaco', monospace;
-  border: 1px solid var(--border-color);
+  border: none;
   border-radius: 6px;
-  background: var(--card-bg);
+  background: var(--bg-hover);
   color: var(--text-primary);
   outline: none;
+  transition: background .15s ease;
+  height: 32px;
+  box-sizing: border-box;
 }
-.path-input:focus { border-color: var(--primary-color); }
-.path-input:disabled { opacity: 0.6; cursor: not-allowed; }
 
-.btn-sm { padding: 2px 6px; font-size: 11px; }
+.terminal-item:hover .path-input-full {
+  background: rgba(25, 118, 210, 0.08);
+}
 
-.actions-row { display: flex; gap: var(--spacing-sm); }
+.terminal-item.active .path-input-full {
+  background: rgba(25, 118, 210, 0.12);
+}
 
-.saved-indicator {
-  display: inline-block;
-  color: #43a047;
+.path-input-full:focus {
+  background: rgba(25, 118, 210, 0.15);
+}
+
+@media (prefers-color-scheme: dark) {
+  .terminal-item:hover .path-input-full {
+    background: rgba(66, 165, 245, 0.12);
+  }
+  .terminal-item.active .path-input-full {
+    background: rgba(66, 165, 245, 0.16);
+  }
+  .path-input-full:focus {
+    background: rgba(66, 165, 245, 0.2);
+  }
+}
+
+.path-display {
+  display: flex;
+  gap: var(--spacing-sm);
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--bg-hover);
+  border-radius: 6px;
+}
+
+.path-icon {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: rgba(25, 118, 210, 0.1);
+  color: var(--primary-color);
+}
+
+@media (prefers-color-scheme: dark) {
+  .path-icon {
+    background: rgba(66, 165, 245, 0.15);
+  }
+}
+
+.path-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-family: 'Consolas', 'Monaco', monospace;
   font-size: var(--font-size-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn-update {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+  font-size: var(--font-size-sm);
+  height: 32px;
+  flex: 0 0 auto;
+  background: var(--primary-color);
+  color: #fff;
+  border: 1px solid var(--primary-color);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all .15s ease;
   font-weight: 500;
+  box-sizing: border-box;
+}
+.btn-update:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(25, 118, 210, 0.3);
+}
+.btn-update svg {
+  flex: 0 0 auto;
+}
+.btn-update span {
+  flex: 0 0 auto;
+}
+
+.btn-success {
+  background: #43a047;
+  border-color: #43a047;
+  color: #fff;
+}
+.btn-success:hover {
+  background: #388e3c;
+  border-color: #388e3c;
+}
+
+.command-line {
+  padding: 6px 8px;
+  background: var(--bg-hover);
+  border-radius: 6px;
+  transition: background .15s ease;
+}
+
+.launch-card:hover .command-line {
+  background: rgba(25, 118, 210, 0.08);
+}
+
+.launch-card.active .command-line {
+  background: rgba(25, 118, 210, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  .launch-card:hover .command-line {
+    background: rgba(66, 165, 245, 0.12);
+  }
+  .launch-card.active .command-line {
+    background: rgba(66, 165, 245, 0.16);
+  }
+}
+
+.command-text {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.btn-xs {
+  padding: 4px 8px;
+  font-size: 11px;
 }
 
 .saved-badge {
@@ -520,8 +992,14 @@ onMounted(load)
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateX(-4px); }
-  to { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 .dialog-overlay {
@@ -542,129 +1020,4 @@ onMounted(load)
 }
 .form-field input:focus { border-color: var(--primary-color); outline: none; }
 .dialog-actions { display: flex; gap: var(--spacing-sm); justify-content: flex-end; margin-top: var(--spacing-lg); }
-
-
-.section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacing-sm);
-  margin-bottom: var(--spacing-md);
-}
-.section-head-text { flex: 1 1 auto; min-width: 0; }
-.section-desc {
-  margin: 4px 0 0;
-  color: var(--text-secondary);
-  font-size: var(--font-size-sm);
-}
-.card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: var(--spacing-sm);
-}
-.launch-card {
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--card-bg);
-  cursor: pointer;
-  transition: border-color .18s ease, background .18s ease, box-shadow .18s ease;
-}
-.launch-card:hover { border-color: var(--primary-color); }
-.launch-card.active {
-  border-color: var(--primary-color);
-  background: rgba(25, 118, 210, .08);
-  box-shadow: 0 0 0 1px rgba(25, 118, 210, .18);
-}
-.card-top {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 28px;
-}
-.card-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-primary);
-  font-size: var(--font-size-base);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.card-actions,
-.card-tools {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 4px;
-}
-.tag {
-  flex: 0 0 auto;
-  padding: 3px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  line-height: 1;
-}
-.tag-gray,
-.tag-off { background: var(--bg-hover); color: var(--text-tertiary); }
-.tag-blue,
-.tag-on { background: rgba(25, 118, 210, .14); color: var(--primary-color); }
-.tag-on { display: inline-flex; align-items: center; gap: 4px; }
-.tag-on .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--primary-color);
-}
-.tool {
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--card-bg);
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.tool:hover { border-color: var(--primary-color); color: var(--primary-color); }
-.tool-del:hover { border-color: #e53935; color: #e53935; }
-.card-body {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border-color);
-}
-.command-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.ki {
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-  background: var(--bg-hover);
-  color: var(--text-tertiary);
-}
-.command-text {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-secondary);
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 13px;
-  letter-spacing: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-@media (max-width: 620px) {
-  .section-head { align-items: flex-start; }
-  .card-grid { grid-template-columns: 1fr; }
-  .card-top { flex-wrap: wrap; }
-  .card-actions { width: 100%; justify-content: flex-end; }
-}
-
 </style>

@@ -1,0 +1,58 @@
+#!/bin/sh
+# Commit message format check
+# 与服务端 pre-receive hook 保持一致的正则:
+#   (^(feat)|(init)|(fix)|(docs)|(refactor)|(style)|(perf)|(test)|(merge)|(revert)|(chore)|(build))(\([A-Za-z0-9_一-龥]+\))?: (.)+
+# 详见 references/git-commit-message.md
+#
+# 启用方法: node ${CLAUDE_PLUGIN_ROOT}/skills/git-workflow/scripts/setup-githooks.js
+#           (或会话启动时由 SessionStart hook 自动安装)
+# 本文件是源模板;setup/check 脚本会把它部署到仓库根 .githooks/commit-msg。
+
+MSG_FILE="$1"
+[ -z "$MSG_FILE" ] && exit 0
+
+# 取首行非注释行
+FIRST_LINE=$(grep -v '^#' "$MSG_FILE" | sed -n '1p')
+
+# 空消息（git commit 取消时）放过, 由 git 自身处理
+[ -z "$FIRST_LINE" ] && exit 0
+
+# 跳过 Git 自动生成的合并/回滚/rebase 消息
+case "$FIRST_LINE" in
+    "Merge "*|"Revert \""*|"fixup! "*|"squash! "*|"amend! "*)
+        exit 0
+        ;;
+esac
+
+# 正则用 PCRE (grep -P) 以支持 \x{4e00}-\x{9fa5} CJK 区间
+PATTERN='(^(feat)|(init)|(fix)|(docs)|(refactor)|(style)|(perf)|(test)|(merge)|(revert)|(chore)|(build))(\([A-Za-z0-9_\x{4e00}-\x{9fa5}]+\))?: (.)+'
+
+if printf '%s' "$FIRST_LINE" | grep -qP "$PATTERN"; then
+    exit 0
+fi
+
+# 拒绝, 给清晰错误信息
+{
+    echo ""
+    echo "✗ Commit message 格式不符合规则 (服务端 pre-receive hook 同步阻断)"
+    echo ""
+    echo "  当前首行: $FIRST_LINE"
+    echo ""
+    echo "  必需格式: <type>[(<scope>)]: <description>"
+    echo "  type 白名单: feat / init / fix / docs / refactor / style / perf / test / merge / revert / chore / build"
+    echo "  scope 字符集: A-Z a-z 0-9 _ 中文 (不允许 - / 等)"
+    echo "  :  英文冒号 + 空格"
+    echo "  description: 至少 1 个字符"
+    echo ""
+    echo "  合法示例:"
+    echo "    feat(plugins): fileTransfer 新增批量上传任务"
+    echo "    fix(linux): 修复 GCC 8 编译错误"
+    echo "    build: 移除 sqlite3 顶层 override"
+    echo "    docs(openspec): 回写 appbuilder-linux-conan-qt-path 验证结果"
+    echo ""
+    echo "  详见 references/git-commit-message.md"
+    echo ""
+    echo "  修复方法: git commit --amend  (尚未推到远端时允许)"
+} >&2
+
+exit 1
