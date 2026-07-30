@@ -15,6 +15,15 @@
       ]
     },
     {
+      "code": "cxstart",
+      "explain": "使用 cx 启动 Codex 项目",
+      "cmds": [
+        "cx",
+        "cxstart",
+        "codex"
+      ]
+    },
+    {
       "code": "ccstartconf",
       "explain": "Claude Code 统一配置中心",
       "cmds": [

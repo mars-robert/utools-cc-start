@@ -24,7 +24,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <template v-if="route === 'ccstart'">
+  <template v-if="route === 'ccstart' || route === 'cxstart'">
     <ProjectLauncher :enterAction="enterAction"></ProjectLauncher>
   </template>
   <template v-if="route === 'ccstartconf'">

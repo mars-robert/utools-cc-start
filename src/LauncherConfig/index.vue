@@ -4,8 +4,10 @@ import { onMounted, ref } from 'vue'
 const isWindows = window.utools.isWindows ? window.utools.isWindows() : false
 
 const launchCommands = ref<any[]>([])
+const codexLaunchCommands = ref<any[]>([])
 const terminals = ref<any[]>([])
 const selectedLaunchId = ref('')
+const selectedCodexLaunchId = ref('')
 const selectedTerminalId = ref('')
 const terminalPaths = ref<Record<string, string>>({})
 const saved = ref(false)
@@ -14,6 +16,7 @@ const saved = ref(false)
 const showLaunchDialog = ref(false)
 const showTerminalDialog = ref(false)
 const editingLaunch = ref<any>(null)
+const launchTarget = ref<'claude' | 'codex'>('claude')
 const editingTerminal = ref<any>(null)
 const launchForm = ref({ label: '', command: '' })
 const terminalForm = ref({ label: '', path: '' })
@@ -21,8 +24,10 @@ const terminalForm = ref({ label: '', path: '' })
 const load = () => {
   const s = window.services.getLauncherSettings()
   launchCommands.value = s.launchCommands
+  codexLaunchCommands.value = s.codexLaunchCommands || []
   terminals.value = s.terminals
   selectedLaunchId.value = s.selectedLaunchId
+  selectedCodexLaunchId.value = s.selectedCodexLaunchId
   selectedTerminalId.value = s.selectedTerminalId
 
   // 初始化终端路径 map
@@ -38,9 +43,16 @@ const flashSaved = () => {
   setTimeout(() => { saved.value = false }, 1500)
 }
 
-const onSelectLaunch = () => {
-  window.services.setSelectedLaunchId(selectedLaunchId.value)
-  flashSaved()
+const selectLaunchCommand = (id: string) => {
+  if (selectedLaunchId.value === id) return
+  selectedLaunchId.value = id
+  window.services.setSelectedLaunchId(id)
+}
+
+const selectCodexLaunchCommand = (id: string) => {
+  if (selectedCodexLaunchId.value === id) return
+  selectedCodexLaunchId.value = id
+  window.services.setSelectedCodexLaunchId(id)
 }
 
 const onSelectTerminal = () => {
@@ -74,13 +86,15 @@ const resetTerminalPath = (t: any) => {
 }
 
 // ---- 启动命令管理 ----
-const openAddLaunch = () => {
+const openAddLaunch = (target: 'claude' | 'codex') => {
+  launchTarget.value = target
   editingLaunch.value = null
   launchForm.value = { label: '', command: '' }
   showLaunchDialog.value = true
 }
 
-const openEditLaunch = (item: any) => {
+const openEditLaunch = (item: any, target: 'claude' | 'codex') => {
+  launchTarget.value = target
   editingLaunch.value = item
   launchForm.value = { label: item.label, command: item.command }
   showLaunchDialog.value = true
@@ -92,22 +106,33 @@ const saveLaunch = () => {
     return
   }
   if (editingLaunch.value) {
-    window.services.updateLaunchCommand(editingLaunch.value.id, { ...launchForm.value })
+    if (launchTarget.value === 'codex') {
+      window.services.updateCodexLaunchCommand(editingLaunch.value.id, { ...launchForm.value })
+    } else {
+      window.services.updateLaunchCommand(editingLaunch.value.id, { ...launchForm.value })
+    }
   } else {
-    const created = window.services.addLaunchCommand({ ...launchForm.value })
-    if (created) selectedLaunchId.value = created.id
+    const created = launchTarget.value === 'codex'
+      ? window.services.addCodexLaunchCommand({ ...launchForm.value })
+      : window.services.addLaunchCommand({ ...launchForm.value })
+    if (created && launchTarget.value === 'codex') {
+      selectedCodexLaunchId.value = created.id
+      window.services.setSelectedCodexLaunchId(created.id)
+    } else if (created) {
+      selectedLaunchId.value = created.id
+      window.services.setSelectedLaunchId(created.id)
+    }
   }
   showLaunchDialog.value = false
   load()
-  window.services.setSelectedLaunchId(selectedLaunchId.value)
 }
 
-const deleteLaunch = (item: any) => {
+const deleteLaunch = (item: any, target: 'claude' | 'codex') => {
   if (item.builtin) return
   if (window.confirm(`确定删除启动命令 "${item.label}" 吗？`)) {
-    window.services.deleteLaunchCommand(item.id)
+    if (target === 'codex') window.services.deleteCodexLaunchCommand(item.id)
+    else window.services.deleteLaunchCommand(item.id)
     load()
-    selectedLaunchId.value = window.services.getLauncherSettings().selectedLaunchId
   }
 }
 
@@ -149,37 +174,137 @@ const deleteTerminal = (item: any) => {
   }
 }
 
+// 工具函数：去除括号及括号中的内容
+const removeBrackets = (text: string) => {
+  if (!text) return ''
+  return text.replace(/\s*[\(（].*?[\)）]\s*/g, '').trim()
+}
+
+// 获取显示名称（去除括号）
+const getDisplayName = (item: any) => {
+  const name = item.label || item.command
+  return removeBrackets(name)
+}
+
 onMounted(load)
 </script>
 
 <template>
   <div class="conf">
     <!-- 启动命令 -->
-    <div class="section card">
-      <h3 class="section-title">启动命令</h3>
-      <div class="radio-list">
-        <div v-for="c in launchCommands" :key="c.id" class="radio-item" :class="{ selected: selectedLaunchId === c.id }">
-          <input
-            type="radio"
-            :id="'lc-' + c.id"
-            :value="c.id"
-            v-model="selectedLaunchId"
-            @change="onSelectLaunch"
-          />
-          <label :for="'lc-' + c.id">
-            <div class="radio-content">
-              <code class="radio-detail">{{ c.command }}</code>
-              <span class="radio-label">{{ c.label }}</span>
+    <div class="section">
+      <div class="section-head">
+        <div class="section-head-text">
+          <h3 class="section-title">Claude 启动命令</h3>
+          <p class="section-desc">选择 Claude 启动时的默认命令，点击卡片即可切换</p>
+        </div>
+        <button class="btn btn-primary" @click="openAddLaunch('claude')">+ 新增命令</button>
+      </div>
+
+      <div class="card-grid">
+        <div
+          v-for="c in launchCommands"
+          :key="c.id"
+          class="launch-card"
+          :class="{ active: selectedLaunchId === c.id }"
+          @click="selectLaunchCommand(c.id)"
+        >
+          <div class="card-top">
+            <span class="card-name">{{ getDisplayName(c) }}</span>
+            <span v-if="c.builtin" class="tag tag-gray">预设</span>
+            <span v-else class="tag tag-blue">自定义</span>
+            <div class="card-actions">
+              <span v-if="selectedLaunchId === c.id" class="tag tag-on"><i class="dot"></i>已选中</span>
+              <span v-else class="tag tag-off">未选中</span>
+              <span v-if="!c.builtin" class="card-tools">
+                <button class="tool" title="编辑" @click.stop="openEditLaunch(c, 'claude')">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                  </svg>
+                </button>
+                <button class="tool tool-del" title="删除" @click.stop="deleteLaunch(c, 'claude')">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 6h18" />
+                    <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                    <path d="M10 11v6M14 11v6" />
+                  </svg>
+                </button>
+              </span>
             </div>
-            <span v-if="!c.builtin" class="badge">自定义</span>
-          </label>
-          <div class="radio-actions">
-            <button v-if="!c.builtin" class="btn btn-sm" @click="openEditLaunch(c)">编辑</button>
-            <button v-if="!c.builtin" class="btn btn-sm btn-danger" @click="deleteLaunch(c)">删除</button>
+          </div>
+          <div class="card-body">
+            <div class="kv command-line">
+              <span class="ki" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="4 17 10 11 4 5" />
+                  <line x1="12" y1="19" x2="20" y2="19" />
+                </svg>
+              </span>
+              <code class="v command-text">{{ c.command }}</code>
+            </div>
           </div>
         </div>
       </div>
-      <button class="btn btn-primary" @click="openAddLaunch">+ 新增启动命令</button>
+    </div>
+
+    <!-- Codex 启动命令 -->
+    <div class="section">
+      <div class="section-head">
+        <div class="section-head-text">
+          <h3 class="section-title">Codex 启动命令</h3>
+          <p class="section-desc">选择 Codex 启动时的默认命令，点击卡片即可切换</p>
+        </div>
+        <button class="btn btn-primary" @click="openAddLaunch('codex')">+ 新增命令</button>
+      </div>
+
+      <div class="card-grid">
+        <div
+          v-for="c in codexLaunchCommands"
+          :key="c.id"
+          class="launch-card"
+          :class="{ active: selectedCodexLaunchId === c.id }"
+          @click="selectCodexLaunchCommand(c.id)"
+        >
+          <div class="card-top">
+            <span class="card-name">{{ getDisplayName(c) }}</span>
+            <span v-if="c.builtin" class="tag tag-gray">预设</span>
+            <span v-else class="tag tag-blue">自定义</span>
+            <div class="card-actions">
+              <span v-if="selectedCodexLaunchId === c.id" class="tag tag-on"><i class="dot"></i>已选中</span>
+              <span v-else class="tag tag-off">未选中</span>
+              <span v-if="!c.builtin" class="card-tools">
+                <button class="tool" title="编辑" @click.stop="openEditLaunch(c, 'codex')">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                  </svg>
+                </button>
+                <button class="tool tool-del" title="删除" @click.stop="deleteLaunch(c, 'codex')">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 6h18" />
+                    <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                    <path d="M10 11v6M14 11v6" />
+                  </svg>
+                </button>
+              </span>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="kv command-line">
+              <span class="ki" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="4 17 10 11 4 5" />
+                  <line x1="12" y1="19" x2="20" y2="19" />
+                </svg>
+              </span>
+              <code class="v command-text">{{ c.command }}</code>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 终端 -->
@@ -224,10 +349,10 @@ onMounted(load)
     <!-- 启动命令弹窗 -->
     <div v-if="showLaunchDialog" class="dialog-overlay" @click="showLaunchDialog = false">
       <div class="dialog card" @click.stop>
-        <h3>{{ editingLaunch ? '编辑启动命令' : '新增启动命令' }}</h3>
+        <h3>{{ editingLaunch ? '编辑' : '新增' }} {{ launchTarget === 'codex' ? 'Codex' : 'Claude' }} 启动命令</h3>
         <div class="form-field">
           <label>命令：</label>
-          <input v-model="launchForm.command" placeholder="例如：claude --resume" />
+          <input v-model="launchForm.command" :placeholder="launchTarget === 'codex' ? '例如：codex --full-auto' : '例如：claude --resume'" />
         </div>
         <div class="form-field">
           <label>显示名称（可选）：</label>
@@ -261,7 +386,7 @@ onMounted(load)
   </div>
 </template>
 
-<style scoped>
+<style scoped><style scoped>
 .conf { box-sizing: border-box; }
 
 .section { margin-bottom: var(--spacing-xl); }
@@ -417,6 +542,129 @@ onMounted(load)
 }
 .form-field input:focus { border-color: var(--primary-color); outline: none; }
 .dialog-actions { display: flex; gap: var(--spacing-sm); justify-content: flex-end; margin-top: var(--spacing-lg); }
+
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+}
+.section-head-text { flex: 1 1 auto; min-width: 0; }
+.section-desc {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--spacing-sm);
+}
+.launch-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--card-bg);
+  cursor: pointer;
+  transition: border-color .18s ease, background .18s ease, box-shadow .18s ease;
+}
+.launch-card:hover { border-color: var(--primary-color); }
+.launch-card.active {
+  border-color: var(--primary-color);
+  background: rgba(25, 118, 210, .08);
+  box-shadow: 0 0 0 1px rgba(25, 118, 210, .18);
+}
+.card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+.card-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-actions,
+.card-tools {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+.tag {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1;
+}
+.tag-gray,
+.tag-off { background: var(--bg-hover); color: var(--text-tertiary); }
+.tag-blue,
+.tag-on { background: rgba(25, 118, 210, .14); color: var(--primary-color); }
+.tag-on { display: inline-flex; align-items: center; gap: 4px; }
+.tag-on .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary-color);
+}
+.tool {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.tool:hover { border-color: var(--primary-color); color: var(--primary-color); }
+.tool-del:hover { border-color: #e53935; color: #e53935; }
+.card-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+.command-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ki {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+}
+.command-text {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 620px) {
+  .section-head { align-items: flex-start; }
+  .card-grid { grid-template-columns: 1fr; }
+  .card-top { flex-wrap: wrap; }
+  .card-actions { width: 100%; justify-content: flex-end; }
+}
+
 </style>
-
-

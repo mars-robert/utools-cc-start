@@ -2,12 +2,17 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import ProjectHistory from '../ProjectHistory/index.vue'
 
-defineProps({
+const props = defineProps({
   enterAction: {
     type: Object,
     required: true
   }
 })
+
+const isCodexLaunch = computed(() => (props.enterAction as any)?.code === 'cxstart')
+const launcherName = computed(() => isCodexLaunch.value ? 'Codex' : 'Claude Code')
+const canOpenHistory = computed(() => !isCodexLaunch.value)
+const projectsDirectory = computed(() => isCodexLaunch.value ? '~/.codex/sessions' : '~/.claude/projects')
 
 const projects = ref<any[]>([])
 const dirExists = ref(true)
@@ -85,7 +90,9 @@ const loadProjects = () => {
   loading.value = true
   error.value = ''
   try {
-    const result = window.services.listClaudeProjects()
+    const result = isCodexLaunch.value
+      ? window.services.listCodexProjects()
+      : window.services.listClaudeProjects()
     dirExists.value = result.dirExists
     projects.value = result.projects || []
     activeIndex.value = 0
@@ -106,8 +113,10 @@ const launch = (project: any) => {
   }
   error.value = ''
   const settings = window.services.getLauncherSettings()
-  const result = window.services.launchProject(project.cwd, settings.launchCommand, {
-    powershellPath: settings.powershellPath
+  const command = isCodexLaunch.value ? (settings.codexLaunchCommand || 'codex') : settings.launchCommand
+  const result = window.services.launchProject(project.cwd, command, {
+    powershellPath: settings.powershellPath,
+    terminalType: settings.terminalType
   })
   if (result && result.success) {
     // 记录最后使用的项目目录，供 ccrun 使用
@@ -122,7 +131,9 @@ const launch = (project: any) => {
 const confirmDelete = () => {
   const target = confirmTarget.value
   if (!target) return
-  const result = window.services.deleteClaudeProject(target.dirName)
+  const result = isCodexLaunch.value
+    ? window.services.deleteCodexProject(target.cwd)
+    : window.services.deleteClaudeProject(target.dirName)
   confirmTarget.value = null
   if (result && result.success) {
     error.value = ''
@@ -163,6 +174,7 @@ const clearSubInputValue = () => {
 }
 
 const enterHistory = (project: any) => {
+  if (!canOpenHistory.value) return
   if (!project || project.isTemp) return
   selectedProject.value = project
   historyQuery.value = ''
@@ -211,14 +223,14 @@ const onKeydown = (e: KeyboardEvent) => {
   } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
     // 左右键在「启动」与「历史按钮」之间切换当前行焦点（临时项无历史按钮）
     const p = filtered.value[activeIndex.value]
-    if (p && !p.isTemp) {
+    if (canOpenHistory.value && p && !p.isTemp) {
       e.preventDefault()
       rowFocus.value = e.key === 'ArrowRight' ? 'history' : 'item'
     }
   } else if (e.key === 'Enter') {
     e.preventDefault()
     const p = filtered.value[activeIndex.value]
-    if (rowFocus.value === 'history' && p && !p.isTemp) enterHistory(p)
+    if (rowFocus.value === 'history' && canOpenHistory.value && p && !p.isTemp) enterHistory(p)
     else launch(p)
   } else if (e.altKey && /^Digit[1-9]$/.test(e.code)) {
     // Alt+数字 快捷启动（用 e.code 判定物理按键）
@@ -271,10 +283,10 @@ onUnmounted(() => {
 
     <template v-if="!loading">
       <div v-if="!dirExists" class="launcher-empty">
-        未找到 Claude Code 项目目录（~/.claude/projects）。
+        未找到 {{ launcherName }} 项目目录（{{ projectsDirectory }}）。
       </div>
       <div v-else-if="projects.length === 0" class="launcher-empty">
-        ~/.claude/projects 下没有任何 Claude Code 项目。
+        {{ projectsDirectory }} 下没有任何 {{ launcherName }} 项目。
       </div>
       <div v-else-if="filtered.length === 0" class="launcher-empty">
         没有匹配的项目。
@@ -301,7 +313,7 @@ onUnmounted(() => {
             <div class="launcher-item-main">
               <div class="launcher-item-name">
                 {{ p.displayName }}
-                <span v-if="p.isTemp" class="launcher-badge launcher-badge-temp">直接启动 Claude Code</span>
+                <span v-if="p.isTemp" class="launcher-badge launcher-badge-temp">直接启动 {{ launcherName }}</span>
                 <span v-else-if="!p.available" class="launcher-badge">不可用</span>
                 <span
                   v-else-if="p.branch"
@@ -323,7 +335,7 @@ onUnmounted(() => {
             <span v-if="i < 9" class="launcher-shortcut">Alt+{{ i + 1 }}</span>
           </div>
           <button
-            v-if="!p.isTemp"
+            v-if="canOpenHistory && !p.isTemp"
             class="launcher-history-btn"
             :class="{ focused: i === activeIndex && rowFocus === 'history' }"
             title="查看历史会话与记忆"
@@ -346,7 +358,7 @@ onUnmounted(() => {
         <div class="launcher-dialog-text">
           项目工作目录
           <div class="launcher-dialog-path">{{ confirmTarget.cwd || confirmTarget.dirName }}</div>
-          不存在，无法启动。是否删除当前项目 claude 缓存？
+          不存在，无法启动。是否删除当前项目 {{ launcherName }} 缓存？
         </div>
         <div class="launcher-dialog-actions">
           <button

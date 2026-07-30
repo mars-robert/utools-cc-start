@@ -15,6 +15,7 @@ function loadActiveSessions () {
 // ===== Claude Code 项目启动器：设置存储 =====
 
 const SETTINGS_KEY = 'ccstart.settings'
+const CODEX_SETTINGS_KEY = 'cxstart.settings'
 
 // Windows 上探测默认 PowerShell 可执行文件路径（优先 PowerShell 7+）
 function detectDefaultPowershell () {
@@ -57,6 +58,10 @@ const BUILTIN_LAUNCH_COMMANDS = [
   { id: 'lc-skip', label: 'Claude 跳过权限确认 (--dangerously-skip-permissions)', command: 'claude --dangerously-skip-permissions' }
 ]
 
+const BUILTIN_CODEX_LAUNCH_COMMANDS = [
+  { id: 'clc-codex', label: 'Codex', command: 'codex' }
+]
+
 const BUILTIN_TERMINALS = [
   { id: 'bt-powershell', label: 'Windows PowerShell', type: 'powershell' },
   { id: 'bt-wt', label: 'Windows Terminal', type: 'wt' },
@@ -78,6 +83,7 @@ function resolveTerminal (term) {
 }
 
 const SETTINGS_VERSION = 2
+const CODEX_SETTINGS_VERSION = 2
 
 // 默认持久化结构（v2）
 function defaultPersisted () {
@@ -292,6 +298,179 @@ function listClaudeProjects () {
   projects.sort((a, b) => b.recency - a.recency)
   result.projects = projects
   return result
+}
+
+// ===== Codex project discovery =====
+
+function getCodexSessionsDir () {
+  return path.join(os.homedir(), '.codex', 'sessions')
+}
+
+// Codex session files can be large. Read only the first JSONL record, which is
+// the session_meta record containing cwd.
+function readFirstJsonlLine (filePath, maxBytes) {
+  const limit = maxBytes || 1024 * 1024
+  if (typeof fs.openSync === 'function' && typeof fs.readSync === 'function' && typeof Buffer !== 'undefined') {
+    let fd
+    try {
+      fd = fs.openSync(filePath, 'r')
+      const chunks = []
+      let total = 0
+      while (total < limit) {
+        const chunk = Buffer.alloc(Math.min(64 * 1024, limit - total))
+        const bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null)
+        if (bytesRead <= 0) break
+        const data = chunk.subarray(0, bytesRead)
+        const newline = data.indexOf(10)
+        chunks.push(newline >= 0 ? data.subarray(0, newline) : data)
+        total += newline >= 0 ? newline : bytesRead
+        if (newline >= 0) break
+      }
+      return Buffer.concat(chunks).toString('utf-8').replace(/\r$/, '')
+    } catch (_) {
+      // Fall back to readFileSync for restricted test/preload environments.
+    } finally {
+      if (fd !== undefined) { try { fs.closeSync(fd) } catch (_) { /* ignore */ } }
+    }
+  }
+
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8')
+    const newline = content.indexOf('\n')
+    return (newline >= 0 ? content.slice(0, newline) : content).replace(/\r$/, '')
+  } catch (_) {
+    return ''
+  }
+}
+
+function readCodexSessionMeta (filePath) {
+  const line = readFirstJsonlLine(filePath).replace(/^\uFEFF/, '').trim()
+  if (!line) return null
+  try {
+    const record = JSON.parse(line)
+    const payload = record && record.type === 'session_meta' ? record.payload : null
+    if (!payload || typeof payload.cwd !== 'string' || !payload.cwd.trim()) return null
+    const timestamp = Date.parse(payload.timestamp || record.timestamp || '')
+    return {
+      cwd: payload.cwd.trim(),
+      timestamp: Number.isFinite(timestamp) ? timestamp : 0
+    }
+  } catch (_) {
+    return null
+  }
+}
+
+function collectCodexSessionFiles (sessionsDir) {
+  const files = []
+  const pending = [sessionsDir]
+  while (pending.length > 0) {
+    const current = pending.pop()
+    let entries = []
+    try { entries = fs.readdirSync(current, { withFileTypes: true }) } catch (_) { continue }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name)
+      if (entry.isDirectory()) pending.push(fullPath)
+      else if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(fullPath)
+    }
+  }
+  return files
+}
+
+function normalizeCodexProjectPath (cwd) {
+  const normalized = path.normalize(cwd)
+  return {
+    cwd: normalized,
+    key: process.platform === 'win32' ? normalized.toLowerCase() : normalized
+  }
+}
+
+function listCodexProjects () {
+  const sessionsDir = getCodexSessionsDir()
+  const result = { dirExists: false, projects: [] }
+  try {
+    if (!fs.existsSync(sessionsDir)) return result
+    result.dirExists = true
+  } catch (_) {
+    return result
+  }
+
+  const byPath = new Map()
+  for (const filePath of collectCodexSessionFiles(sessionsDir)) {
+    const meta = readCodexSessionMeta(filePath)
+    if (!meta) continue
+
+    const normalized = normalizeCodexProjectPath(meta.cwd)
+    let recency = meta.timestamp
+    try {
+      const stat = fs.statSync(filePath)
+      if (Number.isFinite(stat.mtimeMs) && stat.mtimeMs > 0) recency = stat.mtimeMs
+    } catch (_) { /* use the session timestamp */ }
+
+    const previous = byPath.get(normalized.key)
+    if (!previous || recency > previous.recency) {
+      byPath.set(normalized.key, { cwd: normalized.cwd, recency })
+    }
+  }
+
+  const projects = []
+  for (const [key, item] of byPath) {
+    let available = false
+    try { available = fs.existsSync(item.cwd) } catch (_) { /* ignore */ }
+    projects.push({
+      id: 'codex:' + key,
+      dirName: '',
+      cwd: item.cwd,
+      displayName: path.basename(item.cwd) || item.cwd,
+      decoded: false,
+      recency: item.recency,
+      available,
+      branch: available ? readGitBranch(item.cwd) : '',
+      source: 'codex'
+    })
+  }
+
+  projects.sort((a, b) => b.recency - a.recency)
+  result.projects = projects
+  return result
+}
+
+// 删除指定 cwd 对应的 Codex 会话记录；只删除 ~/.codex/sessions 下的
+// JSONL 会话文件，不触碰真实项目目录。
+function deleteCodexProject (cwd) {
+  try {
+    if (!cwd || typeof cwd !== 'string') {
+      return { success: false, error: '项目路径无效' }
+    }
+
+    const sessionsDir = getCodexSessionsDir()
+    if (!fs.existsSync(sessionsDir)) {
+      return { success: false, error: 'Codex 会话目录不存在' }
+    }
+
+    const targetKey = normalizeCodexProjectPath(cwd.trim()).key
+    let deleted = 0
+    let failed = 0
+    for (const filePath of collectCodexSessionFiles(sessionsDir)) {
+      const meta = readCodexSessionMeta(filePath)
+      if (!meta || normalizeCodexProjectPath(meta.cwd).key !== targetKey) continue
+      try {
+        fs.unlinkSync(filePath)
+        deleted++
+      } catch (_) {
+        failed++
+      }
+    }
+
+    if (deleted === 0) {
+      return {
+        success: false,
+        error: failed > 0 ? 'Codex 项目记录删除失败' : 'Codex 项目记录不存在'
+      }
+    }
+    return { success: true, deleted, failed }
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) }
+  }
 }
 
 // 删除 Claude Code 项目记录目录（~/.claude/projects/<dirName>）
@@ -725,11 +904,67 @@ function writePersisted (persisted) {
   return merged
 }
 
+function defaultCodexPersisted () {
+  return {
+    version: CODEX_SETTINGS_VERSION,
+    customLaunchCommands: [],
+    selectedLaunchId: 'clc-codex'
+  }
+}
+
+// 迁移旧的 Codex 单命令配置，同时保持与 Claude 配置独立。
+function readCodexPersisted () {
+  let raw = null
+  try { raw = window.utools.dbStorage.getItem(CODEX_SETTINGS_KEY) } catch (_) { raw = null }
+  if (raw && typeof raw === 'object' && raw.version === CODEX_SETTINGS_VERSION) {
+    const merged = Object.assign(defaultCodexPersisted(), raw)
+    if (!Array.isArray(merged.customLaunchCommands)) merged.customLaunchCommands = []
+    return merged
+  }
+
+  const migrated = defaultCodexPersisted()
+  let oldCommand = ''
+  if (typeof raw === 'string') oldCommand = raw.trim()
+  else if (raw && typeof raw.launchCommand === 'string') oldCommand = raw.launchCommand.trim()
+
+  if (!raw) {
+    try {
+      const legacy = window.utools.dbStorage.getItem(SETTINGS_KEY)
+      const sharedCommand = legacy && typeof legacy.codexLaunchCommand === 'string'
+        ? legacy.codexLaunchCommand.trim()
+        : ''
+      if (sharedCommand && sharedCommand !== 'cx') oldCommand = sharedCommand
+    } catch (_) { /* use default */ }
+  }
+
+  if (oldCommand && oldCommand !== 'codex') {
+    const id = 'clc-custom-legacy'
+    migrated.customLaunchCommands.push({ id, label: oldCommand, command: oldCommand })
+    migrated.selectedLaunchId = id
+  }
+  return migrated
+}
+
+function writeCodexPersisted (persisted) {
+  const merged = Object.assign(defaultCodexPersisted(), persisted || {})
+  merged.version = CODEX_SETTINGS_VERSION
+  window.utools.dbStorage.setItem(CODEX_SETTINGS_KEY, merged)
+  return merged
+}
+
 // 合并内置 + 自定义的完整列表
 function getLaunchCommandList (persisted) {
   const p = persisted || readPersisted()
   return [
     ...BUILTIN_LAUNCH_COMMANDS.map((c) => ({ ...c, builtin: true })),
+    ...p.customLaunchCommands.map((c) => ({ ...c, builtin: false }))
+  ]
+}
+
+function getCodexLaunchCommandList (persisted) {
+  const p = persisted || readCodexPersisted()
+  return [
+    ...BUILTIN_CODEX_LAUNCH_COMMANDS.map((c) => ({ ...c, builtin: true })),
     ...p.customLaunchCommands.map((c) => ({ ...c, builtin: false }))
   ]
 }
@@ -750,9 +985,12 @@ function getTerminalList (persisted) {
 // 派生运行时设置：供 launchProject/runCommand 使用，签名不变
 function getLauncherSettings () {
   const p = readPersisted()
+  const codex = readCodexPersisted()
   const cmds = getLaunchCommandList(p)
+  const codexCmds = getCodexLaunchCommandList(codex)
   const terms = getTerminalList(p)
   const selCmd = cmds.find((c) => c.id === p.selectedLaunchId) || cmds[0]
+  const selCodexCmd = codexCmds.find((c) => c.id === codex.selectedLaunchId) || codexCmds[0]
   const selTerm = terms.find((t) => t.id === p.selectedTerminalId) || terms[0]
   const resolved = resolveTerminal(selTerm)
   // selTerm.resolvedPath 已包含预设路径覆盖；优先使用它作为运行时路径
@@ -760,11 +998,14 @@ function getLauncherSettings () {
   return {
     // 运行时字段（兼容旧调用处）
     launchCommand: (selCmd && selCmd.command) || 'claude',
+    codexLaunchCommand: (selCodexCmd && selCodexCmd.command) || 'codex',
     powershellPath: runtimePath,
     terminalType: resolved.terminalType,
     // 完整模型（供配置界面使用）
     launchCommands: cmds,
     selectedLaunchId: selCmd ? selCmd.id : 'lc-claude',
+    codexLaunchCommands: codexCmds,
+    selectedCodexLaunchId: selCodexCmd ? selCodexCmd.id : 'clc-codex',
     terminals: terms,
     selectedTerminalId: selTerm ? selTerm.id : 'bt-powershell'
   }
@@ -800,6 +1041,39 @@ function deleteLaunchCommand (id) {
   p.customLaunchCommands = p.customLaunchCommands.filter((c) => c.id !== id)
   if (p.selectedLaunchId === id) p.selectedLaunchId = 'lc-claude'
   writePersisted(p)
+  return true
+}
+
+// ---- Codex 启动命令项增删改（独立持久化） ----
+function setSelectedCodexLaunchId (id) {
+  const p = readCodexPersisted()
+  p.selectedLaunchId = id
+  return writeCodexPersisted(p)
+}
+
+function addCodexLaunchCommand (item) {
+  const p = readCodexPersisted()
+  const newItem = { id: 'clc-custom-' + Date.now(), label: item.label || item.command, command: item.command }
+  p.customLaunchCommands.push(newItem)
+  writeCodexPersisted(p)
+  return newItem
+}
+
+function updateCodexLaunchCommand (id, patch) {
+  const p = readCodexPersisted()
+  const idx = p.customLaunchCommands.findIndex((c) => c.id === id)
+  if (idx === -1) return null
+  p.customLaunchCommands[idx] = { ...p.customLaunchCommands[idx], ...patch, id }
+  writeCodexPersisted(p)
+  return p.customLaunchCommands[idx]
+}
+
+function deleteCodexLaunchCommand (id) {
+  if (BUILTIN_CODEX_LAUNCH_COMMANDS.some((c) => c.id === id)) return false
+  const p = readCodexPersisted()
+  p.customLaunchCommands = p.customLaunchCommands.filter((c) => c.id !== id)
+  if (p.selectedLaunchId === id) p.selectedLaunchId = 'clc-codex'
+  writeCodexPersisted(p)
   return true
 }
 
@@ -2005,6 +2279,12 @@ window.services = {
   // 列出 Claude Code 项目（已排序）
   listClaudeProjects,
 
+  // List Codex projects discovered from ~/.codex/sessions session metadata.
+  listCodexProjects,
+
+  // 删除 cwd 对应的 Codex 会话记录文件
+  deleteCodexProject,
+
   // 读取项目当前 git 分支（解析 .git/HEAD）
   readGitBranch,
 
@@ -2091,6 +2371,12 @@ window.services = {
   addLaunchCommand,
   updateLaunchCommand,
   deleteLaunchCommand,
+
+  // Codex 启动命令项管理（独立配置）
+  setSelectedCodexLaunchId,
+  addCodexLaunchCommand,
+  updateCodexLaunchCommand,
+  deleteCodexLaunchCommand,
 
   // 终端项管理
   setSelectedTerminalId,

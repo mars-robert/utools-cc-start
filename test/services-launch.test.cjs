@@ -28,6 +28,7 @@ function loadServices ({ platform = 'win32', exists = () => true, store = {} } =
           }
         }
       }
+      if (id === './env-config-new.js') return {}
       throw new Error(`Unexpected require: ${id}`)
     },
     process: {
@@ -83,7 +84,11 @@ test('getLauncherSettings returns builtin presets with defaults', () => {
   assert.equal(s.launchCommands.length, 4)
   assert.equal(s.terminals.length, 4)
   assert.equal(s.launchCommand, 'claude')
+  assert.equal(s.codexLaunchCommand, 'codex')
   assert.equal(s.selectedLaunchId, 'lc-claude')
+  assert.equal(s.codexLaunchCommands.length, 1)
+  assert.equal(s.selectedCodexLaunchId, 'clc-codex')
+  assert.equal(s.codexLaunchCommands[0].builtin, true)
   assert.equal(s.terminalType, 'powershell')
 })
 
@@ -96,6 +101,21 @@ test('migrates legacy settings into v2 list model', () => {
   assert.equal(s.launchCommand, 'claude --resume')
   assert.equal(s.selectedLaunchId, 'lc-resume')
   assert.equal(s.terminalType, 'wt')
+})
+
+test('existing v2 Claude settings without a Codex command fall back to codex', () => {
+  const store = {
+    'ccstart.settings': {
+      version: 2,
+      customLaunchCommands: [],
+      selectedLaunchId: 'lc-claude',
+      customTerminals: [],
+      selectedTerminalId: 'bt-powershell',
+      terminalPathOverrides: {}
+    }
+  }
+  const { services } = loadServices({ store })
+  assert.equal(services.getLauncherSettings().codexLaunchCommand, 'codex')
 })
 
 test('custom launch commands can be added, selected, and deleted', () => {
@@ -112,6 +132,61 @@ test('custom launch commands can be added, selected, and deleted', () => {
   s = services.getLauncherSettings()
   assert.equal(s.launchCommands.length, 4)
   assert.equal(s.selectedLaunchId, 'lc-claude')
+})
+
+test('Codex launch command cards are managed independently', () => {
+  const store = {}
+  const { services } = loadServices({ store })
+  const created = services.addCodexLaunchCommand({ label: 'Codex Search', command: 'codex --search' })
+  services.setSelectedCodexLaunchId(created.id)
+  let s = services.getLauncherSettings()
+  assert.equal(s.codexLaunchCommand, 'codex --search')
+  assert.equal(s.selectedCodexLaunchId, created.id)
+  assert.equal(s.codexLaunchCommands.length, 2)
+  assert.equal(s.launchCommand, 'claude')
+  assert.equal(store['cxstart.settings'].selectedLaunchId, created.id)
+  assert.equal(store['ccstart.settings'], undefined)
+
+  services.updateCodexLaunchCommand(created.id, { label: 'Full Auto', command: 'codex --full-auto' })
+  s = services.getLauncherSettings()
+  assert.equal(s.codexLaunchCommand, 'codex --full-auto')
+  assert.equal(s.codexLaunchCommands[1].label, 'Full Auto')
+
+  assert.equal(services.deleteCodexLaunchCommand('clc-codex'), false)
+  assert.equal(services.deleteCodexLaunchCommand(created.id), true)
+  s = services.getLauncherSettings()
+  assert.equal(s.codexLaunchCommand, 'codex')
+  assert.equal(s.selectedCodexLaunchId, 'clc-codex')
+  assert.equal(s.codexLaunchCommands.length, 1)
+})
+
+test('legacy independent Codex command migrates to a selected custom card', () => {
+  const store = {
+    'cxstart.settings': { version: 1, launchCommand: 'codex --search' }
+  }
+  const { services } = loadServices({ store })
+  const s = services.getLauncherSettings()
+  assert.equal(s.codexLaunchCommand, 'codex --search')
+  assert.equal(s.codexLaunchCommands.length, 2)
+  assert.equal(s.selectedCodexLaunchId, 'clc-custom-legacy')
+})
+
+test('legacy shared cx default migrates to the independent codex default', () => {
+  const store = {
+    'ccstart.settings': {
+      version: 2,
+      customLaunchCommands: [],
+      selectedLaunchId: 'lc-claude',
+      codexLaunchCommand: 'cx',
+      customTerminals: [],
+      selectedTerminalId: 'bt-powershell',
+      terminalPathOverrides: {}
+    }
+  }
+  const { services } = loadServices({ store })
+  const s = services.getLauncherSettings()
+  assert.equal(s.codexLaunchCommand, 'codex')
+  assert.equal(s.launchCommand, 'claude')
 })
 
 test('builtin command overrides: edit, delete, reset', () => {
