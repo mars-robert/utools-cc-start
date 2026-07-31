@@ -32,6 +32,25 @@ test('readGitBranch: 普通分支从 .git/HEAD 的 ref 解析', () => {
   assert.equal(services.readGitBranch(cwd), 'main')
 })
 
+test('readGitBranch: 普通仓库直接读取 HEAD，不先 stat .git 目录', () => {
+  const cwd = 'C:\\repo'
+  const statPaths = []
+  const services = loadPreload({
+    readFile: (p) => {
+      const key = String(p)
+      if (key === path.join(cwd, '.git', 'HEAD')) return 'ref: refs/heads/main\n'
+      throw new Error('ENOENT: ' + key)
+    },
+    stat: (p) => {
+      statPaths.push(String(p))
+      throw new Error('unexpected stat: ' + p)
+    }
+  }).services
+
+  assert.equal(services.readGitBranch(cwd), 'main')
+  assert.deepEqual(statPaths, [])
+})
+
 test('readGitBranch: 含斜杠的分支名完整保留', () => {
   const cwd = 'C:\\repo'
   const services = makeServices({

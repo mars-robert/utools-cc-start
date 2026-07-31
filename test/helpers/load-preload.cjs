@@ -14,6 +14,8 @@ function loadPreload ({
   unlink = () => {},
   stat = (p) => fs.statSync(p),
   readdir = (p, options) => fs.readdirSync(p, options),
+  kill = process.kill,
+  spawnSync = () => ({ status: 1, stdout: '', stderr: '' }),
   store = {},
   modules = {}
 } = {}) {
@@ -73,7 +75,8 @@ function loadPreload ({
           spawn (command, args, options) {
             spawns.push({ command, args, options })
             return { unref () {} }
-          }
+          },
+          spawnSync
         }
       }
       throw new Error(`Unexpected require: ${id}`)
@@ -89,6 +92,7 @@ function loadPreload ({
     require: (id) => localRequire(id),
     process: {
       platform,
+      kill,
       env: {
         ProgramFiles: 'C:\\Program Files',
         SystemRoot: 'C:\\Windows'

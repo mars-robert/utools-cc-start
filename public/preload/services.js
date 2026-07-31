@@ -1,7 +1,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const os = require('node:os')
-const { spawn } = require('node:child_process')
+const { spawn, spawnSync } = require('node:child_process')
 
 function loadClaudeConfigHelpers () {
   return require('./claude-config.js')
@@ -201,8 +201,27 @@ function computeRecency (projectDir, sessionFiles, dirStat) {
 
 // 读取项目当前 git 分支：直接解析 .git/HEAD，零子进程开销
 // 返回分支名；detached HEAD 返回短 commit；非 git 仓库或出错返回 ''
+function parseGitHeadBranch (head) {
+  const text = String(head || '').trim()
+  const ref = text.match(/^ref:\s*refs\/heads\/(.+)$/)
+  if (ref) return ref[1]
+  if (/^[0-9a-f]{7,40}$/i.test(text)) return text.slice(0, 7)
+  return ''
+}
+
+function readGitHeadBranch (headPath) {
+  try {
+    return parseGitHeadBranch(fs.readFileSync(headPath, 'utf-8'))
+  } catch (_) {
+    return null
+  }
+}
+
 function readGitBranch (cwd) {
   if (!cwd) return ''
+  const gitPath = path.join(cwd, '.git')
+  const fastBranch = readGitHeadBranch(path.join(gitPath, 'HEAD'))
+  if (fastBranch !== null) return fastBranch
   try {
     let gitDir = path.join(cwd, '.git')
     const st = fs.statSync(gitDir)
@@ -221,6 +240,46 @@ function readGitBranch (cwd) {
   } catch (_) {
     return ''
   }
+}
+
+const gitBranchCache = new Map()
+const GIT_BRANCH_CACHE_LIMIT = 200
+
+function rememberGitBranch (key, branch) {
+  if (gitBranchCache.size >= GIT_BRANCH_CACHE_LIMIT) {
+    const first = gitBranchCache.keys().next().value
+    if (first) gitBranchCache.delete(first)
+  }
+  gitBranchCache.set(key, branch)
+}
+
+function gitHeadCacheSignature (cwd) {
+  const gitPath = path.join(cwd, '.git')
+  const directHead = path.join(gitPath, 'HEAD')
+  try {
+    const st = fs.statSync(directHead)
+    return directHead + ':' + st.mtimeMs + ':' + (st.size || 0)
+  } catch (_) { /* fall back to worktree gitdir file */ }
+  try {
+    const m = fs.readFileSync(gitPath, 'utf-8').trim().match(/^gitdir:\s*(.+)$/)
+    if (!m) return ''
+    const headPath = path.join(path.resolve(cwd, m[1].trim()), 'HEAD')
+    const st = fs.statSync(headPath)
+    return headPath + ':' + st.mtimeMs + ':' + (st.size || 0)
+  } catch (_) { return '' }
+}
+
+function readGitBranchCached (cwd) {
+  if (!cwd) return ''
+  const normalized = path.resolve(cwd)
+  const cacheKeyPath = process.platform === 'win32' ? normalized.toLowerCase() : normalized
+  const sig = gitHeadCacheSignature(cwd)
+  if (!sig) return readGitBranch(cwd)
+  const key = cacheKeyPath + ':' + sig
+  if (gitBranchCache.has(key)) return gitBranchCache.get(key)
+  const branch = readGitBranch(cwd)
+  rememberGitBranch(key, branch)
+  return branch
 }
 
 function listClaudeProjects () {
@@ -313,6 +372,30 @@ function getCodexStateDbPath () {
   return path.join(os.homedir(), '.codex', 'state_5.sqlite')
 }
 
+function getCodexLogsDbPath () {
+  return path.join(os.homedir(), '.codex', 'logs_2.sqlite')
+}
+
+const codexParsedSessionCache = new Map()
+const CODEX_PARSED_SESSION_CACHE_LIMIT = 12
+
+function fileSignature (filePath) {
+  try {
+    const st = fs.statSync(filePath)
+    return { sig: st.mtimeMs + ':' + (st.size || 0), size: st.size || 0, mtime: st.mtimeMs }
+  } catch (_) {
+    return null
+  }
+}
+
+function rememberCodexParsedSession (key, value) {
+  if (codexParsedSessionCache.size >= CODEX_PARSED_SESSION_CACHE_LIMIT) {
+    const first = codexParsedSessionCache.keys().next().value
+    if (first) codexParsedSessionCache.delete(first)
+  }
+  codexParsedSessionCache.set(key, value)
+}
+
 // Codex session files can be large. Read only the first JSONL record, which is
 // the session_meta record containing cwd.
 function readFirstJsonlLine (filePath, maxBytes) {
@@ -360,11 +443,70 @@ function readCodexSessionMeta (filePath) {
     const timestamp = Date.parse(payload.timestamp || record.timestamp || '')
     return {
       cwd: payload.cwd.trim(),
-      timestamp: Number.isFinite(timestamp) ? timestamp : 0
+      timestamp: Number.isFinite(timestamp) ? timestamp : 0,
+      thread_source: payload.thread_source || (payload.source && payload.source.subagent ? 'subagent' : ''),
+      model: payload.model || '',
+      reasoningEffort: payload.reasoning_effort || '',
+      gitSha: payload.git_sha || '',
+      approvalMode: payload.approval_mode || '',
+      sandboxPolicy: payload.sandbox_policy || '',
+      tokensUsed: Number(payload.tokens_used) || 0
     }
   } catch (_) {
     return null
   }
+}
+
+function readCodexJsonlHead (filePath, maxBytes) {
+  const limit = maxBytes || 256 * 1024
+  if (typeof fs.openSync === 'function' && typeof fs.readSync === 'function' && typeof Buffer !== 'undefined') {
+    let fd
+    try {
+      fd = fs.openSync(filePath, 'r')
+      const buffer = Buffer.alloc(limit)
+      const bytesRead = fs.readSync(fd, buffer, 0, limit, 0)
+      return buffer.subarray(0, bytesRead).toString('utf-8')
+    } catch (_) {
+      // Fall back to readFileSync for restricted test/preload environments.
+    } finally {
+      if (fd !== undefined) { try { fs.closeSync(fd) } catch (_) { /* ignore */ } }
+    }
+  }
+
+  try {
+    return fs.readFileSync(filePath, 'utf-8').slice(0, limit)
+  } catch (_) {
+    return ''
+  }
+}
+
+function codexSessionIdFromFileName (filePath) {
+  const base = path.basename(filePath || '', '.jsonl')
+  const match = base.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i)
+  return match ? match[1] : base.replace(/^rollout-[^-]+-/, '')
+}
+
+function codexFirstUserMessageFromContent (content) {
+  const lines = (typeof content === 'string' ? content : '').split(/\r?\n/)
+  for (const line of lines) {
+    if (!line) continue
+    let record
+    try { record = JSON.parse(line) } catch (_) { continue }
+    const payload = record && record.payload
+    if (!payload || typeof payload !== 'object') continue
+    if (record.type === 'event_msg' && payload.type === 'user_message') {
+      const text = codexPayloadText(payload.message || payload.text || payload)
+      if (text.trim()) return text.trim()
+    }
+  }
+  return ''
+}
+
+function readCodexSessionTitleFromFile (filePath) {
+  return codexFirstUserMessageFromContent(readCodexJsonlHead(filePath))
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80)
 }
 
 function collectCodexSessionFiles (sessionsDir) {
@@ -439,6 +581,65 @@ function readCodexThreadRowsFromStateDb () {
   }
 }
 
+function readCodexHistoryThreadRowsFromStateDb () {
+  const dbPath = getCodexStateDbPath()
+  try {
+    if (!fs.existsSync(dbPath)) return null
+  } catch (_) {
+    return null
+  }
+
+  let sqlite
+  try {
+    sqlite = require('node:sqlite')
+  } catch (_) {
+    return null
+  }
+
+  let db
+  try {
+    db = new sqlite.DatabaseSync(dbPath, { readOnly: true })
+    return db.prepare(
+      [
+        'select id, rollout_path, cwd, title, first_user_message, preview,',
+        'recency_at_ms, updated_at_ms, updated_at, created_at_ms, created_at,',
+        'git_branch, git_sha, cli_version, model, reasoning_effort, tokens_used, approval_mode, sandbox_policy, thread_source',
+        "from threads where cwd is not null and trim(cwd) <> ''"
+      ].join(' ')
+    ).all()
+  } catch (_) {
+    return null
+  } finally {
+    if (db && typeof db.close === 'function') {
+      try { db.close() } catch (_) { /* ignore */ }
+    }
+  }
+}
+
+function readCodexHistoryThreadRowsFromExternalNode () {
+  if (typeof spawnSync !== 'function') return null
+  const script = [
+    "const sqlite=require('node:sqlite')",
+    "const dbPath=" + JSON.stringify(getCodexStateDbPath()),
+    "let db",
+    "try{db=new sqlite.DatabaseSync(dbPath,{readOnly:true});const rows=db.prepare(\"select id, rollout_path, cwd, title, first_user_message, preview, recency_at_ms, updated_at_ms, updated_at, created_at_ms, created_at, git_branch, git_sha, cli_version, model, reasoning_effort, tokens_used, approval_mode, sandbox_policy, thread_source from threads where cwd is not null and trim(cwd) <> ''\").all();process.stdout.write(JSON.stringify(rows))}catch(e){process.exitCode=1}finally{if(db)try{db.close()}catch(_){}}"
+  ].join(';')
+  try {
+    const result = spawnSync('node', ['-e', script], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 3000,
+      maxBuffer: 1024 * 1024
+    })
+    if (!result || result.status !== 0 || !result.stdout) return null
+    const parsed = JSON.parse(result.stdout)
+    const rows = Array.isArray(parsed) ? parsed : parsed && parsed.threads
+    return Array.isArray(rows) ? rows : null
+  } catch (_) {
+    return null
+  }
+}
+
 function addCodexProjectCandidate (byPath, cwd, recency) {
   if (typeof cwd !== 'string' || !cwd.trim()) return
   const normalized = normalizeCodexProjectPath(cwd)
@@ -462,7 +663,7 @@ function buildCodexProjectsFromCandidates (byPath) {
       decoded: false,
       recency: item.recency,
       available,
-      branch: available ? readGitBranch(item.cwd) : '',
+      branch: available ? readGitBranchCached(item.cwd) : '',
       source: 'codex'
     })
   }
@@ -507,6 +708,486 @@ function listCodexProjects () {
 
   result.projects = buildCodexProjectsFromCandidates(byPath)
   return result
+}
+
+function normalizeCodexSessionId (id) {
+  return typeof id === 'string' ? id.trim() : ''
+}
+
+function isShellSafeCodexSessionId (id) {
+  return typeof id === 'string' && /^[A-Za-z0-9._:-]+$/.test(id)
+}
+
+function isPidAlive (pid) {
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return !!e && e.code === 'EPERM'
+  }
+}
+
+function codexPidFromProcessUuid (processUuid) {
+  if (typeof processUuid !== 'string') return 0
+  const match = processUuid.match(/^pid:(\d+):/)
+  if (!match) return 0
+  const pid = Number(match[1])
+  return Number.isInteger(pid) && pid > 0 ? pid : 0
+}
+
+function realPathSafe (filePath) {
+  try {
+    const realpath = fs.realpathSync && (fs.realpathSync.native || fs.realpathSync)
+    return typeof realpath === 'function' ? realpath(filePath) : path.resolve(filePath)
+  } catch (_) {
+    return path.resolve(filePath)
+  }
+}
+
+function resolveSafeCodexRolloutPath (filePath) {
+  if (typeof filePath !== 'string' || !filePath.trim()) return false
+  const sessionsDir = path.resolve(getCodexSessionsDir())
+  const target = path.resolve(stripWindowsExtendedPathPrefix(filePath.trim()))
+  const rel = path.relative(sessionsDir, target)
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel) || !target.endsWith('.jsonl')) return ''
+  const realSessionsDir = realPathSafe(sessionsDir)
+  const realTarget = realPathSafe(target)
+  const realRel = path.relative(realSessionsDir, realTarget)
+  if (realRel === '' || realRel.startsWith('..') || path.isAbsolute(realRel)) return ''
+  return target
+}
+
+function isSafeCodexRolloutPath (filePath) {
+  return !!resolveSafeCodexRolloutPath(filePath)
+}
+
+function codexTitleFromRow (row) {
+  const title = row && (row.title || row.name || row.first_user_message || row.preview)
+  return typeof title === 'string' ? title.replace(/\s+/g, ' ').trim().slice(0, 80) : ''
+}
+
+function codexSessionFromThreadRow (row) {
+  const sessionId = normalizeCodexSessionId(row && row.id)
+  if (!sessionId) return null
+  const rolloutPath = row ? resolveSafeCodexRolloutPath(row.rollout_path) : ''
+  return {
+    sessionId,
+    title: codexTitleFromRow(row),
+    mtime: getCodexThreadRecency(row),
+    size: Number(row && row.size) || 0,
+    rolloutPath,
+    gitBranch: (row && row.git_branch) || '',
+    gitSha: (row && row.git_sha) || '',
+    version: (row && row.cli_version) || '',
+    model: (row && row.model) || '',
+    reasoningEffort: (row && row.reasoning_effort) || '',
+    tokensUsed: Number(row && row.tokens_used) || 0,
+    approvalMode: (row && row.approval_mode) || '',
+    sandboxPolicy: (row && row.sandbox_policy) || ''
+  }
+}
+
+function codexSessionFromFile (filePath, cwd) {
+  const rolloutPath = resolveSafeCodexRolloutPath(filePath)
+  if (!rolloutPath) return null
+  const meta = readCodexSessionMetaWithId(rolloutPath)
+  if (!meta || normalizeCodexProjectPath(meta.cwd).key !== normalizeCodexProjectPath(cwd).key) return null
+  if (isCodexSubagentThreadRow(meta)) return null
+  let stat = null
+  try { stat = fs.statSync(rolloutPath) } catch (_) { /* ignore */ }
+  const sessionId = normalizeCodexSessionId(meta.sessionId || codexSessionIdFromFileName(rolloutPath))
+  if (!sessionId) return null
+  const mtime = stat && Number.isFinite(stat.mtimeMs) && stat.mtimeMs > 0 ? stat.mtimeMs : meta.timestamp
+  return {
+    sessionId,
+    title: readCodexSessionTitleFromFile(rolloutPath),
+    mtime,
+    size: stat ? (stat.size || 0) : 0,
+    rolloutPath,
+    gitBranch: meta.gitBranch || '',
+    gitSha: meta.gitSha || '',
+    version: meta.version || '',
+    model: meta.model || '',
+    reasoningEffort: meta.reasoningEffort || '',
+    tokensUsed: meta.tokensUsed || 0,
+    approvalMode: meta.approvalMode || '',
+    sandboxPolicy: meta.sandboxPolicy || ''
+  }
+}
+
+function codexRowsForCwd (cwd) {
+  if (typeof cwd !== 'string' || !cwd.trim()) return []
+  let rows = readCodexHistoryThreadRowsFromStateDb()
+  if (!rows) rows = readCodexHistoryThreadRowsFromExternalNode()
+  if (!rows) return null
+  return codexRowsForCwdFromRows(cwd, rows)
+}
+
+function isCodexSubagentThreadRow (row) {
+  return typeof (row && row.thread_source) === 'string' && row.thread_source.trim().toLowerCase() === 'subagent'
+}
+
+function codexRowsForCwdFromRows (cwd, rows) {
+  if (typeof cwd !== 'string' || !cwd.trim() || !Array.isArray(rows)) return []
+  const target = normalizeCodexProjectPath(cwd).key
+  return rows.filter((row) => row && !isCodexSubagentThreadRow(row) && normalizeCodexProjectPath(row.cwd || '').key === target)
+}
+
+function listCodexProjectSessions (cwd) {
+  const sessions = []
+  const rows = codexRowsForCwd(cwd)
+  if (rows) {
+    for (const row of rows) {
+      const item = codexSessionFromThreadRow(row)
+      if (item) sessions.push(item)
+    }
+  } else {
+    const sessionsDir = getCodexSessionsDir()
+    try { if (!fs.existsSync(sessionsDir)) return sessions } catch (_) { return sessions }
+    for (const filePath of collectCodexSessionFiles(sessionsDir)) {
+      const item = codexSessionFromFile(filePath, cwd)
+      if (item) sessions.push(item)
+    }
+  }
+  sessions.sort((a, b) => b.mtime - a.mtime)
+  return sessions
+}
+
+function readCodexActiveLogRowsFromLogsDb () {
+  const dbPath = getCodexLogsDbPath()
+  try {
+    if (!fs.existsSync(dbPath)) return null
+  } catch (_) {
+    return null
+  }
+
+  let sqlite
+  try {
+    sqlite = require('node:sqlite')
+  } catch (_) {
+    return null
+  }
+
+  let db
+  try {
+    db = new sqlite.DatabaseSync(dbPath, { readOnly: true })
+    return db.prepare(
+      [
+        'select thread_id, process_uuid, ts, ts_nanos',
+        'from logs',
+        "where thread_id is not null and trim(thread_id) <> ''",
+        "and process_uuid is not null and process_uuid like 'pid:%'",
+        'order by ts desc, ts_nanos desc',
+        'limit 2000'
+      ].join(' ')
+    ).all()
+  } catch (_) {
+    return null
+  } finally {
+    if (db && typeof db.close === 'function') {
+      try { db.close() } catch (_) { /* ignore */ }
+    }
+  }
+}
+
+function readCodexActiveSnapshotFromExternalNode () {
+  if (typeof spawnSync !== 'function') return null
+  const script = [
+    "const sqlite=require('node:sqlite')",
+    "const logsDbPath=" + JSON.stringify(getCodexLogsDbPath()),
+    "const stateDbPath=" + JSON.stringify(getCodexStateDbPath()),
+    "function q(file,sql){let db;try{db=new sqlite.DatabaseSync(file,{readOnly:true});return db.prepare(sql).all()}catch(_){return null}finally{if(db)try{db.close()}catch(_){}}}",
+    "const logs=q(logsDbPath,\"select thread_id, process_uuid, ts, ts_nanos from logs where thread_id is not null and trim(thread_id) <> '' and process_uuid is not null and process_uuid like 'pid:%' order by ts desc, ts_nanos desc limit 2000\")",
+    "const threads=q(stateDbPath,\"select id, cwd, thread_source from threads where cwd is not null and trim(cwd) <> ''\")",
+    "process.stdout.write(JSON.stringify({logs,threads}))"
+  ].join(';')
+  try {
+    const result = spawnSync('node', ['-e', script], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 3000,
+      maxBuffer: 1024 * 1024
+    })
+    if (!result || result.status !== 0 || !result.stdout) return null
+    const parsed = JSON.parse(result.stdout)
+    return {
+      logs: Array.isArray(parsed && parsed.logs) ? parsed.logs : null,
+      threads: Array.isArray(parsed && parsed.threads) ? parsed.threads : null
+    }
+  } catch (_) {
+    return null
+  }
+}
+
+function listActiveCodexSessions (cwd) {
+  let rows = readCodexActiveLogRowsFromLogsDb()
+  let threadRows = readCodexHistoryThreadRowsFromStateDb()
+  if (!rows || !threadRows) {
+    const external = readCodexActiveSnapshotFromExternalNode()
+    if (!rows && external) rows = external.logs
+    if (!threadRows && external) threadRows = external.threads
+  }
+  if (!rows || !threadRows) return []
+  const projectRows = cwd != null ? codexRowsForCwdFromRows(cwd, threadRows) : threadRows
+  const allowedIds = new Set(projectRows.map((row) => normalizeCodexSessionId(row && row.id)).filter(Boolean))
+  const latestByProcess = new Map()
+  for (const row of rows) {
+    if (!row || !row.process_uuid) continue
+    const previous = latestByProcess.get(row.process_uuid)
+    const ts = Number(row.ts) || 0
+    const tsNanos = Number(row.ts_nanos) || 0
+    if (!previous || ts > previous.ts || (ts === previous.ts && tsNanos > previous.tsNanos)) {
+      latestByProcess.set(row.process_uuid, { ...row, ts, tsNanos })
+    }
+  }
+  const bySession = new Map()
+  for (const row of latestByProcess.values()) {
+    const sessionId = normalizeCodexSessionId(row && row.thread_id)
+    if (!sessionId || !allowedIds.has(sessionId) || bySession.has(sessionId)) continue
+    const pid = codexPidFromProcessUuid(row.process_uuid)
+    if (!isPidAlive(pid)) continue
+    bySession.set(sessionId, { sessionId, status: 'running', pid })
+  }
+  return [...bySession.values()]
+}
+
+function findCodexThreadRow (cwd, sessionId) {
+  const wanted = normalizeCodexSessionId(sessionId)
+  if (!wanted) return null
+  const rows = codexRowsForCwd(cwd)
+  if (!rows) return null
+  return rows.find((row) => normalizeCodexSessionId(row && row.id) === wanted) || null
+}
+
+function readCodexSessionMetaWithId (filePath) {
+  const meta = readCodexSessionMeta(filePath)
+  if (!meta) return null
+  const line = readFirstJsonlLine(filePath).replace(/^\uFEFF/, '').trim()
+  try {
+    const record = JSON.parse(line)
+    const payload = record && record.type === 'session_meta' ? record.payload : null
+    return {
+      ...meta,
+      sessionId: normalizeCodexSessionId((payload && (payload.id || payload.session_id)) || ''),
+      version: (payload && payload.cli_version) || '',
+      gitBranch: (payload && payload.git_branch) || '',
+      gitSha: (payload && payload.git_sha) || '',
+      model: (payload && payload.model) || meta.model || '',
+      reasoningEffort: (payload && payload.reasoning_effort) || meta.reasoningEffort || '',
+      tokensUsed: Number(payload && payload.tokens_used) || meta.tokensUsed || 0,
+      approvalMode: (payload && payload.approval_mode) || meta.approvalMode || '',
+      sandboxPolicy: (payload && payload.sandbox_policy) || meta.sandboxPolicy || ''
+    }
+  } catch (_) {
+    return meta
+  }
+}
+
+function findCodexSessionFileById (sessionId) {
+  const wanted = normalizeCodexSessionId(sessionId)
+  if (!wanted) return ''
+  const sessionsDir = getCodexSessionsDir()
+  try { if (!fs.existsSync(sessionsDir)) return '' } catch (_) { return '' }
+  for (const filePath of collectCodexSessionFiles(sessionsDir)) {
+    const meta = readCodexSessionMetaWithId(filePath)
+    if (meta && meta.sessionId === wanted) return filePath
+  }
+  return ''
+}
+
+function codexRolloutPathForSession (cwd, sessionId, options) {
+  const wanted = normalizeCodexSessionId(sessionId)
+  if (!wanted) return ''
+  const validateMeta = !options || options.validateMeta !== false
+  const row = findCodexThreadRow(cwd, sessionId)
+  const rowPath = row ? resolveSafeCodexRolloutPath(row.rollout_path) : ''
+  if (rowPath) {
+    if (!validateMeta && normalizeCodexSessionId(row && row.id) === wanted) return rowPath
+    const meta = readCodexSessionMetaWithId(rowPath)
+    if (
+      meta &&
+      meta.sessionId === wanted &&
+      normalizeCodexProjectPath(meta.cwd).key === normalizeCodexProjectPath(cwd).key
+    ) return rowPath
+  }
+  const fallback = findCodexSessionFileById(sessionId)
+  if (!fallback) return ''
+  const meta = readCodexSessionMetaWithId(fallback)
+  if (!meta || meta.sessionId !== wanted || normalizeCodexProjectPath(meta.cwd).key !== normalizeCodexProjectPath(cwd).key) return ''
+  return fallback
+}
+
+function codexPayloadText (value) {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      if (typeof item === 'string') return item
+      if (!item || typeof item !== 'object') return ''
+      if (typeof item.text === 'string') return item.text
+      if (typeof item.content === 'string') return item.content
+      return ''
+    }).filter(Boolean).join('\n')
+  }
+  if (value && typeof value === 'object') {
+    if (typeof value.text === 'string') return value.text
+    if (typeof value.message === 'string') return value.message
+    if (value.content !== undefined) return codexPayloadText(value.content)
+  }
+  return ''
+}
+
+function codexReasoningText (payload) {
+  if (!payload || typeof payload !== 'object') return ''
+  if (typeof payload.text === 'string') return payload.text
+  if (typeof payload.summary === 'string') return payload.summary
+  return codexPayloadText(payload.summary)
+}
+
+function codexResponseMessageText (payload) {
+  if (!payload || typeof payload !== 'object') return ''
+  if (typeof payload.content === 'string') return payload.role === 'assistant' ? payload.content : ''
+  if (!Array.isArray(payload.content)) return typeof payload.text === 'string' && payload.role === 'assistant' ? payload.text : ''
+  return payload.content.map((item) => {
+    if (!item || typeof item !== 'object') return ''
+    if (item.type === 'output_text' && typeof item.text === 'string') return item.text
+    return ''
+  }).filter(Boolean).join('\n')
+}
+
+function parseCodexArguments (args) {
+  if (typeof args !== 'string') return args
+  try { return JSON.parse(args) } catch (_) { return args }
+}
+
+function parseCodexSession (content) {
+  const blocks = []
+  const toolUseByCallId = {}
+  const meta = { gitBranch: '', version: '', firstTimestamp: '', lastTimestamp: '', count: 0, cwd: '', sessionId: '' }
+  const pushBlock = (block) => {
+    const previous = blocks[blocks.length - 1]
+    if (
+      previous &&
+      (block.kind === 'user' || block.kind === 'assistant') &&
+      previous.kind === block.kind &&
+      previous.text === block.text
+    ) return
+    blocks.push(block)
+    meta.count++
+  }
+  const lines = (typeof content === 'string' ? content : '').split(/\r?\n/)
+  for (const line of lines) {
+    if (!line) continue
+    let record
+    try { record = JSON.parse(line) } catch (_) { continue }
+    if (!record || typeof record !== 'object') continue
+    const ts = record.timestamp || ''
+    if (ts) {
+      if (!meta.firstTimestamp) meta.firstTimestamp = ts
+      meta.lastTimestamp = ts
+    }
+    const payload = record.payload || {}
+    if (record.type === 'session_meta') {
+      if (!meta.sessionId) meta.sessionId = normalizeCodexSessionId(payload.id || payload.session_id || '')
+      if (!meta.cwd && typeof payload.cwd === 'string') meta.cwd = payload.cwd.trim()
+      if (!meta.version && payload.cli_version) meta.version = payload.cli_version
+      if (!meta.gitBranch && payload.git_branch) meta.gitBranch = payload.git_branch
+      continue
+    }
+    if (record.type === 'turn_context') {
+      if (!meta.gitBranch && payload.git_branch) meta.gitBranch = payload.git_branch
+      continue
+    }
+    if (record.type === 'event_msg') {
+      if (payload.type === 'user_message') {
+        const text = codexPayloadText(payload.message || payload.text || payload)
+        if (text.trim()) pushBlock({ kind: 'user', text: text.trim(), ts })
+      } else if (payload.type === 'agent_message') {
+        const text = codexPayloadText(payload.message || payload.text || payload)
+        if (text.trim()) pushBlock({ kind: 'assistant', text: text.trim(), ts })
+      }
+      continue
+    }
+    if (record.type !== 'response_item') continue
+    if (payload.type === 'message') {
+      const text = codexResponseMessageText(payload)
+      if (!text.trim()) continue
+      pushBlock({ kind: payload.role === 'user' ? 'user' : 'assistant', text: text.trim(), ts, model: payload.model || '' })
+    } else if (payload.type === 'reasoning') {
+      const text = codexReasoningText(payload)
+      if (text.trim()) { blocks.push({ kind: 'thinking', text: text.trim(), ts }); meta.count++ }
+    } else if (payload.type === 'function_call') {
+      const blk = {
+        kind: 'tool_use',
+        id: payload.id || payload.call_id || '',
+        name: payload.name || 'tool',
+        input: parseCodexArguments(payload.arguments),
+        result: null,
+        ts
+      }
+      if (payload.call_id) toolUseByCallId[payload.call_id] = blk
+      blocks.push(blk)
+      meta.count++
+    } else if (payload.type === 'function_call_output') {
+      const text = codexPayloadText(payload.output || payload.content || payload)
+      const target = payload.call_id ? toolUseByCallId[payload.call_id] : null
+      if (target) target.result = { text, isError: !!payload.is_error }
+      else { blocks.push({ kind: 'tool_result', text, isError: !!payload.is_error, ts }); meta.count++ }
+    }
+  }
+  return { blocks, meta }
+}
+
+function readCodexSession (cwd, sessionId) {
+  const filePath = codexRolloutPathForSession(cwd, sessionId, { validateMeta: false })
+  if (!filePath) return null
+  try {
+    const sig = fileSignature(filePath)
+    if (!sig) return null
+    const cacheKey = filePath + '\0' + sig.sig
+    let parsed = codexParsedSessionCache.get(cacheKey)
+    if (!parsed) {
+      parsed = parseCodexSession(fs.readFileSync(filePath, 'utf-8'))
+      rememberCodexParsedSession(cacheKey, parsed)
+    }
+    if (
+      normalizeCodexSessionId(parsed.meta && parsed.meta.sessionId) !== normalizeCodexSessionId(sessionId) ||
+      normalizeCodexProjectPath((parsed.meta && parsed.meta.cwd) || '').key !== normalizeCodexProjectPath(cwd).key
+    ) return null
+    const row = findCodexThreadRow(cwd, sessionId)
+    if (row) {
+      if (!parsed.meta.gitBranch && row.git_branch) parsed.meta.gitBranch = row.git_branch
+      if (!parsed.meta.version && row.cli_version) parsed.meta.version = row.cli_version
+    }
+    return parsed
+  } catch (_) { return null }
+}
+
+function statCodexSession (cwd, sessionId) {
+  const filePath = codexRolloutPathForSession(cwd, sessionId)
+  if (!filePath) return null
+  try {
+    const st = fs.statSync(filePath)
+    return { mtime: st.mtimeMs, size: st.size || 0 }
+  } catch (_) { return null }
+}
+
+function exportCodexSession (cwd, sessionId) {
+  const parsed = readCodexSession(cwd, sessionId)
+  if (!parsed) return null
+  return sessionToMarkdown(parsed, sessionId, 'Codex')
+}
+
+function exportCodexSessionToFile (cwd, sessionId, filePath) {
+  try {
+    if (!filePath || typeof filePath !== 'string') return { success: false, error: '保存路径无效' }
+    const md = exportCodexSession(cwd, sessionId)
+    if (md === null) return { success: false, error: '会话读取失败' }
+    fs.writeFileSync(filePath, md, { encoding: 'utf-8' })
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err && err.message ? err.message : String(err) }
+  }
 }
 
 // 删除指定 cwd 对应的 Codex 会话记录；只删除 ~/.codex/sessions 下的
@@ -1902,9 +2583,10 @@ function mdClaudeBlock (out, c) {
 }
 
 // 将解析后的会话格式化为 Markdown 对话稿（按用户 / Claude 回合分组）
-function sessionToMarkdown (parsed, sessionId) {
+function sessionToMarkdown (parsed, sessionId, assistantLabel) {
   if (!parsed) return ''
   const { blocks, meta } = parsed
+  const label = assistantLabel || 'Claude'
   const out = ['# 会话记录']
   const metaBits = []
   if (sessionId) metaBits.push('`' + sessionId + '`')
@@ -1928,7 +2610,7 @@ function sessionToMarkdown (parsed, sessionId) {
       }
       i++
     } else {
-      out.push('## 🤖 Claude', '')
+      out.push('## 🤖 ' + label, '')
       while (i < n && blocks[i].kind !== 'user') { mdClaudeBlock(out, blocks[i]); i++ }
     }
   }
@@ -1981,6 +2663,18 @@ function resumeSession (cwd, sessionId) {
 //
 // 读写分离：浏览类直接读 ~/.claude 下的 JSON（快、离线、只读安全）；
 // 变更类统一经 `claude plugin …` 子命令执行（复用 CC 官方 git/版本/缓存逻辑，不改写 CC 文件）。
+
+function resumeCodexSession (cwd, sessionId) {
+  if (!cwd) return { success: false, error: 'Project cwd is empty' }
+  const id = normalizeCodexSessionId(sessionId)
+  if (!isShellSafeCodexSessionId(id)) return { success: false, error: 'Invalid session id' }
+  if (!codexRolloutPathForSession(cwd, id)) return { success: false, error: 'Session does not belong to this project' }
+  const settings = getLauncherSettings()
+  return launchProject(cwd, 'codex resume ' + id, {
+    powershellPath: settings.powershellPath,
+    terminalType: settings.terminalType
+  })
+}
 
 function getClaudePluginsDir () {
   return path.join(os.homedir(), '.claude', 'plugins')
@@ -2497,6 +3191,14 @@ window.services = {
 
   // List Codex projects discovered from ~/.codex/sessions session metadata.
   listCodexProjects,
+  listCodexProjectSessions,
+  readCodexSession,
+  statCodexSession,
+  listActiveCodexSessions,
+  parseCodexSession,
+  exportCodexSession,
+  exportCodexSessionToFile,
+  resumeCodexSession,
 
   // 删除 cwd 对应的 Codex 会话记录文件
   deleteCodexProject,

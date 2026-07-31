@@ -11,7 +11,7 @@ const props = defineProps({
 
 const isCodexLaunch = computed(() => (props.enterAction as any)?.code === 'cxstart')
 const launcherName = computed(() => isCodexLaunch.value ? 'Codex' : 'Claude Code')
-const canOpenHistory = computed(() => !isCodexLaunch.value)
+const canOpenHistory = computed(() => true)
 const projectsDirectory = computed(() => isCodexLaunch.value ? '~/.codex/sessions' : '~/.claude/projects')
 
 const projects = ref<any[]>([])
@@ -174,7 +174,7 @@ const applyHistorySubInput = () => {
   if (window.utools && typeof window.utools.setSubInput === 'function') {
     window.utools.setSubInput(({ text }: { text: string }) => {
       historyQuery.value = text
-    }, '搜索记忆或会话…')
+    }, isCodexLaunch.value ? '搜索历史会话…' : '搜索记忆或会话…')
   }
 }
 

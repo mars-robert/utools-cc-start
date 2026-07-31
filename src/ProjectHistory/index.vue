@@ -31,6 +31,17 @@ const subagentById = (id: string | null) => (id ? subagents.value.find((a: any) 
 const currentViewLabel = computed(() => (currentAgent.value ? (subagentById(currentAgent.value)?.description || currentAgent.value) : '主任务'))
 
 // 窄屏（<900px）下左侧列表收为左上角弹窗
+const isCodexHistory = computed(() => props.project?.source === 'codex')
+const assistantName = computed(() => isCodexHistory.value ? 'Codex' : 'Claude')
+const listToggleTitle = computed(() => {
+  if (showList.value) return '收起列表'
+  return isCodexHistory.value ? '历史会话列表' : '记忆与会话列表'
+})
+const emptyLeftText = computed(() => {
+  if (props.filter) return '没有匹配的内容'
+  return isCodexHistory.value ? '该项目暂无历史会话' : '该项目暂无记忆或历史会话'
+})
+const emptyDetailText = computed(() => isCodexHistory.value ? '请选择一条历史会话' : '请选择一条记忆或历史会话')
 const narrow = ref(false)
 const showList = ref(false)
 const suppressAnim = ref(false) // 宽窄切换瞬间禁用弹窗过渡，避免从侧栏态淡出造成"一闪"
@@ -360,10 +371,12 @@ const load = () => {
   subDetail.value = null
   selectedSession.value = null
   const p = props.project
-  if (!p || !p.dirName) { memories.value = []; sessions.value = []; return }
+  if (!p || (isCodexHistory.value ? !p.cwd : !p.dirName)) { memories.value = []; sessions.value = []; return }
   try {
-    memories.value = window.services.listProjectMemories(p.dirName) || []
-    sessions.value = window.services.listProjectSessions(p.dirName) || []
+    memories.value = isCodexHistory.value ? [] : (window.services.listProjectMemories(p.dirName) || [])
+    sessions.value = isCodexHistory.value
+      ? (window.services.listCodexProjectSessions(p.cwd) || [])
+      : (window.services.listProjectSessions(p.dirName) || [])
     refreshActive()
   } catch (err: any) {
     error.value = err && err.message ? err.message : String(err)
@@ -389,6 +402,38 @@ const formatSize = (bytes: number) => {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB'
   return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+const formatCompactTokens = (n: number) => {
+  const value = Number(n) || 0
+  if (!value) return ''
+  if (value >= 1000 * 1000) return (value / 1000 / 1000).toFixed(value >= 10 * 1000 * 1000 ? 1 : 2).replace(/\.0+$/, '') + 'M tok'
+  if (value >= 1000) return (value / 1000).toFixed(value >= 10 * 1000 ? 0 : 1).replace(/\.0+$/, '') + 'k tok'
+  return value + ' tok'
+}
+
+const codexSessionChips = (s: any) => {
+  if (!isCodexHistory.value || !s) return []
+  const chips: string[] = []
+  const model = [s.model, s.reasoningEffort].filter(Boolean).join(' / ')
+  if (model) chips.push(model)
+  const tokens = formatCompactTokens(s.tokensUsed)
+  if (tokens) chips.push(tokens)
+  return chips
+}
+
+const codexSessionMetaTitle = (s: any) => {
+  if (!s) return ''
+  return [
+    s.model ? 'model: ' + s.model : '',
+    s.reasoningEffort ? 'reasoning: ' + s.reasoningEffort : '',
+    s.gitBranch ? 'branch: ' + s.gitBranch : '',
+    s.gitSha ? 'sha: ' + s.gitSha : '',
+    s.tokensUsed ? 'tokens: ' + fmtNum(Number(s.tokensUsed) || 0) : '',
+    s.version ? 'cli: ' + s.version : '',
+    s.approvalMode ? 'approval: ' + s.approvalMode : '',
+    s.sandboxPolicy ? 'sandbox: ' + s.sandboxPolicy : ''
+  ].filter(Boolean).join('\n')
 }
 
 // ---- markdown 渲染（最小净化，防止工具输出中的 HTML/脚本被执行）----
@@ -698,7 +743,9 @@ const onDetailScroll = () => {
 }
 const sessionSig = (s: any) => {
   try {
-    const st = window.services.statSession(props.project.dirName, s.sessionId)
+    const st = isCodexHistory.value
+      ? window.services.statCodexSession(props.project.cwd, s.sessionId)
+      : window.services.statSession(props.project.dirName, s.sessionId)
     return st ? st.mtime + ':' + st.size : ''
   } catch (_) { return '' }
 }
@@ -710,7 +757,9 @@ const refreshSession = () => {
   if (!sig || sig === lastSig) return
   const wasNearBottom = isNearBottom()
   try {
-    const next = window.services.readSession(props.project.dirName, s.sessionId)
+    const next = isCodexHistory.value
+      ? window.services.readCodexSession(props.project.cwd, s.sessionId)
+      : window.services.readSession(props.project.dirName, s.sessionId)
     if (next) { mainDetail.value = next; sessionDetail.value = next; lastSig = sig; mainSig = sig }
   } catch (_) { return }
   nextTick(() => {
@@ -740,14 +789,16 @@ const toggleAutoRefresh = () => {
 // 仅重载会话列表（不触碰当前选中/详情/轮询），供新会话出现时增量刷新
 const reloadSessions = () => {
   const p = props.project
-  if (!p || !p.dirName) return
-  try { sessions.value = window.services.listProjectSessions(p.dirName) || [] } catch (_) { /* 失败则保持原列表 */ }
+  if (!p || (isCodexHistory.value ? !p.cwd : !p.dirName)) return
+  try { sessions.value = isCodexHistory.value ? (window.services.listCodexProjectSessions(p.cwd) || []) : (window.services.listProjectSessions(p.dirName) || []) } catch (_) { /* 失败则保持原列表 */ }
 }
 
 // 刷新本项目活跃 session 集合；若当前打开会话的存活态翻转则联动启停实时刷新
 const refreshActive = () => {
   try {
-    const list = window.services.listActiveSessions(props.project?.cwd) || []
+    const list = isCodexHistory.value
+      ? (window.services.listActiveCodexSessions(props.project?.cwd) || [])
+      : (window.services.listActiveSessions(props.project?.cwd) || [])
     activeIds.value = new Set(list.map((a: any) => a.sessionId))
   } catch (_) { activeIds.value = new Set() }
   // 启动新会话时活跃集会先于列表更新：出现列表中尚无的活跃 session → 重载列表使其自动出现
@@ -809,9 +860,11 @@ const selectSession = (s: any) => {
   subDetail.value = null
   setTimeout(() => {
     try {
-      mainDetail.value = window.services.readSession(props.project.dirName, s.sessionId)
+      mainDetail.value = isCodexHistory.value
+        ? window.services.readCodexSession(props.project.cwd, s.sessionId)
+        : window.services.readSession(props.project.dirName, s.sessionId)
       sessionDetail.value = mainDetail.value
-      subagents.value = window.services.listSubagents(props.project.dirName, s.sessionId) || []
+      subagents.value = isCodexHistory.value ? [] : (window.services.listSubagents(props.project.dirName, s.sessionId) || [])
       lastSig = sessionSig(s)
       mainSig = lastSig
     } catch (err: any) {
@@ -927,7 +980,8 @@ const openTerminal = () => {
   if (!p || !p.available) { error.value = '项目工作目录不存在，无法打开终端'; return }
   error.value = ''
   const settings = window.services.getLauncherSettings()
-  const r = window.services.launchProject(p.cwd, settings.launchCommand, {
+  const command = isCodexHistory.value ? (settings.codexLaunchCommand || 'codex') : settings.launchCommand
+  const r = window.services.launchProject(p.cwd, command, {
     powershellPath: settings.powershellPath,
     terminalType: settings.terminalType
   })
@@ -965,7 +1019,9 @@ const onPathDblClick = () => {
 const doResume = () => {
   if (!selectedSession.value) return
   error.value = ''
-  const r = window.services.resumeSession(props.project.cwd, selectedSession.value.sessionId)
+  const r = isCodexHistory.value
+    ? window.services.resumeCodexSession(props.project.cwd, selectedSession.value.sessionId)
+    : window.services.resumeSession(props.project.cwd, selectedSession.value.sessionId)
   if (r && r.success) window.utools.outPlugin()
   else error.value = (r && r.error) || '恢复失败'
 }
@@ -991,7 +1047,7 @@ const doExportMd = () => {
     const md = window.services.sessionToMarkdown(sessionDetail.value, currentViewLabel.value)
     r = window.services.writeTextFile(target, md)
   } else {
-    r = window.services.exportSessionToFile(props.project.dirName, selectedSession.value.sessionId, target)
+    r = isCodexHistory.value ? window.services.exportCodexSessionToFile(props.project.cwd, selectedSession.value.sessionId, target) : window.services.exportSessionToFile(props.project.dirName, selectedSession.value.sessionId, target)
   }
   if (r && r.success) showToast('已导出 Markdown')
   else error.value = (r && r.error) || '导出失败'
@@ -1156,7 +1212,7 @@ watch(() => props.project, load)
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6" /></svg>
       </button>
-      <button v-if="narrow" class="ph-list-toggle" :class="{ on: showList }" :title="showList ? '收起列表' : '记忆与会话列表'" @click="showList = !showList">
+      <button v-if="narrow" class="ph-list-toggle" :class="{ on: showList }" :title="listToggleTitle" @click="showList = !showList">
         <svg class="ph-lt-ico ph-lt-menu" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
         <svg class="ph-lt-ico ph-lt-close" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
@@ -1241,7 +1297,7 @@ watch(() => props.project, load)
         </div>
 
         <div v-if="!filteredMemories.length && !filteredSessions.length" class="ph-empty-left">
-          {{ filter ? '没有匹配的内容' : '该项目暂无记忆或历史会话' }}
+          {{ emptyLeftText }}
         </div>
       </aside>
 
@@ -1252,7 +1308,7 @@ watch(() => props.project, load)
             <path d="M22 12h-6l-2 3h-4l-2-3H2" />
             <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
           </svg>
-          <div class="ph-empty-text">请选择一条记忆或历史会话</div>
+          <div class="ph-empty-text">{{ emptyDetailText }}</div>
         </div>
 
         <!-- 记忆详情 -->
@@ -1288,6 +1344,7 @@ watch(() => props.project, load)
                 <span v-if="currentLive && !currentAgent" class="ph-online-chip" title="该会话当前在终端中打开并在线">● 在线</span>
               </div>
               <div v-if="sessionDetail && sessionDetail.meta" class="ph-detail-meta">
+                <span v-for="chip in codexSessionChips(selectedSession)" :key="'cx-' + chip" :title="codexSessionMetaTitle(selectedSession)">{{ chip }}</span>
                 <span v-if="sessionDetail.meta.gitBranch">⎇ {{ sessionDetail.meta.gitBranch }}</span>
                 <span v-if="sessionDetail.meta.version">v{{ sessionDetail.meta.version }}</span>
                 <span v-if="sessionDetail.meta.count">{{ sessionDetail.meta.count }} 条</span>
@@ -1522,7 +1579,7 @@ watch(() => props.project, load)
                   <span class="chat-ava chat-ava-ai">AI</span>
                   <div class="chat-col">
                     <div class="chat-head">
-                      <span class="chat-name chat-name-ai">Claude</span>
+                      <span class="chat-name chat-name-ai">{{ assistantName }}</span>
                       <span v-if="claudeHeadMeta(t.meta)" class="chat-headmeta" :title="claudeHeadTitle(t.meta)">{{ claudeHeadMeta(t.meta) }}</span>
                     </div>
                     <div class="chat-bubble-claude">
