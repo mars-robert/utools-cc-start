@@ -44,7 +44,10 @@ function historyRowsForCwd(rows, cwd, platform) {
   if (!target) return []
   return rows.filter((row) => (
     row &&
-    row.thread_source !== 'subagent' &&
+    !(
+      typeof row.thread_source === 'string' &&
+      row.thread_source.trim().toLowerCase() === 'subagent'
+    ) &&
     normalizePath(row.cwd, platform) === target
   ))
 }

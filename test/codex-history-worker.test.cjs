@@ -35,12 +35,14 @@ test('normalizes cwd values and excludes exact subagent rows', () => {
   const rows = [
     { id: 'drive', cwd: '\\\\?\\D:\\CODE\\alpha' },
     { id: 'subagent', cwd: 'D:\\code\\alpha', thread_source: 'subagent' },
+    { id: 'normalized-subagent', cwd: 'D:\\code\\alpha', thread_source: ' SubAgent ' },
+    { id: 'subagent-review', cwd: 'D:\\code\\alpha', thread_source: 'subagent_review' },
     { id: 'other', cwd: 'D:\\code\\beta' },
   ]
 
   assert.deepEqual(
     historyRowsForCwd(rows, 'd:\\code\\alpha', 'win32').map((row) => row.id),
-    ['drive'],
+    ['drive', 'subagent-review'],
   )
 })
 
