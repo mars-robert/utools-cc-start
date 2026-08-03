@@ -128,11 +128,16 @@ test('a newer project prevents an unresolved old list from applying', async () =
   assert.deepEqual(activeKeys, ['beta'])
 })
 
-test('ignores an old active result after switching projects', async () => {
+test('queues the new project active refresh behind stale in-flight work', async () => {
   const alphaActive = deferred()
   const alphaActiveStarted = deferred()
+  const betaActive = deferred()
+  const betaActiveStarted = deferred()
   const betaSessionsApplied = deferred()
+  const activeKeys = []
   const appliedActive = []
+  let concurrentActive = 0
+  let maxConcurrentActive = 0
   const loader = createHistoryLoader({
     listSessions: async (key) => [`session-${key}`],
     onSessions: (sessions) => {
@@ -140,11 +145,13 @@ test('ignores an old active result after switching projects', async () => {
     },
     afterListRender: () => {},
     listActive: (key) => {
-      if (key === 'alpha') {
-        alphaActiveStarted.resolve()
-        return alphaActive.promise
-      }
-      return Promise.resolve(['active-beta'])
+      activeKeys.push(key)
+      concurrentActive += 1
+      maxConcurrentActive = Math.max(maxConcurrentActive, concurrentActive)
+      const request = key === 'alpha' ? alphaActive : betaActive
+      if (key === 'alpha') alphaActiveStarted.resolve()
+      if (key === 'beta') betaActiveStarted.resolve()
+      return request.promise.finally(() => { concurrentActive -= 1 })
     },
     onActive: (sessions) => appliedActive.push(sessions),
   })
@@ -154,13 +161,133 @@ test('ignores an old active result after switching projects', async () => {
 
   const betaLoad = loader.load('beta')
   await betaSessionsApplied.promise
+  await Promise.resolve()
+
+  assert.deepEqual(activeKeys, ['alpha'])
+  alphaActive.resolve(['active-alpha'])
+  await alphaLoad
+
+  assert.deepEqual(activeKeys, ['alpha', 'beta'])
+  await betaActiveStarted.promise
+  assert.deepEqual(appliedActive, [])
+  assert.equal(maxConcurrentActive, 1)
+
+  betaActive.resolve(['active-beta'])
+  await betaLoad
+
+  assert.deepEqual(appliedActive, [['active-beta']])
+  assert.equal(maxConcurrentActive, 1)
+})
+
+test('supersedes a queued active refresh with the latest project', async () => {
+  const alphaActive = deferred()
+  const alphaActiveStarted = deferred()
+  const betaSessionsApplied = deferred()
+  const charlieSessionsApplied = deferred()
+  const charlieActive = deferred()
+  const charlieActiveStarted = deferred()
+  const activeKeys = []
+  const appliedActive = []
+  let concurrentActive = 0
+  let maxConcurrentActive = 0
+  const loader = createHistoryLoader({
+    listSessions: async (key) => [`session-${key}`],
+    onSessions: (sessions) => {
+      if (sessions[0] === 'session-beta') betaSessionsApplied.resolve()
+      if (sessions[0] === 'session-charlie') charlieSessionsApplied.resolve()
+    },
+    afterListRender: () => {},
+    listActive: (key) => {
+      activeKeys.push(key)
+      concurrentActive += 1
+      maxConcurrentActive = Math.max(maxConcurrentActive, concurrentActive)
+      const request = key === 'alpha' ? alphaActive : charlieActive
+      if (key === 'alpha') alphaActiveStarted.resolve()
+      if (key === 'charlie') charlieActiveStarted.resolve()
+      return request.promise.finally(() => { concurrentActive -= 1 })
+    },
+    onActive: (sessions) => appliedActive.push(sessions),
+  })
+
+  const alphaLoad = loader.load('alpha')
+  await alphaActiveStarted.promise
+
+  const betaLoad = loader.load('beta')
+  await betaSessionsApplied.promise
+  await Promise.resolve()
+  const queuedBeta = loader.refreshActive()
+  assert.strictEqual(loader.refreshActive(), queuedBeta)
+  let queuedBetaSettled = false
+  let queuedBetaResult
+  queuedBeta.then((value) => {
+    queuedBetaSettled = true
+    queuedBetaResult = value
+  })
+
+  const charlieLoad = loader.load('charlie')
+  await charlieSessionsApplied.promise
+  await Promise.resolve()
+  const queuedCharlie = loader.refreshActive()
+  assert.strictEqual(loader.refreshActive(), queuedCharlie)
+
+  assert.equal(queuedBetaSettled, true)
+  assert.equal(queuedBetaResult, null)
+  assert.deepEqual(activeKeys, ['alpha'])
+
+  alphaActive.resolve(['active-alpha'])
+  await alphaLoad
+  await charlieActiveStarted.promise
+  assert.deepEqual(activeKeys, ['alpha', 'charlie'])
+  assert.deepEqual(appliedActive, [])
+  assert.equal(maxConcurrentActive, 1)
+
+  charlieActive.resolve(['active-charlie'])
+  await Promise.all([betaLoad, charlieLoad, queuedCharlie])
+
+  assert.deepEqual(appliedActive, [['active-charlie']])
+  assert.equal(maxConcurrentActive, 1)
+})
+
+test('invalidate settles queued active work without launching it', async () => {
+  const alphaActive = deferred()
+  const alphaActiveStarted = deferred()
+  const betaSessionsApplied = deferred()
+  const activeKeys = []
+  const loader = createHistoryLoader({
+    listSessions: async (key) => [`session-${key}`],
+    onSessions: (sessions) => {
+      if (sessions[0] === 'session-beta') betaSessionsApplied.resolve()
+    },
+    afterListRender: () => {},
+    listActive: (key) => {
+      activeKeys.push(key)
+      if (key === 'alpha') alphaActiveStarted.resolve()
+      return alphaActive.promise
+    },
+    onActive: () => {},
+  })
+
+  const alphaLoad = loader.load('alpha')
+  await alphaActiveStarted.promise
+  const betaLoad = loader.load('beta')
+  await betaSessionsApplied.promise
+  await Promise.resolve()
+  const queuedBeta = loader.refreshActive()
+  let queuedBetaSettled = false
+  let queuedBetaResult
+  queuedBeta.then((value) => {
+    queuedBetaSettled = true
+    queuedBetaResult = value
+  })
+
+  loader.invalidate()
+  await Promise.resolve()
+  assert.equal(queuedBetaSettled, true)
+  assert.equal(queuedBetaResult, null)
+
   alphaActive.resolve(['active-alpha'])
   await Promise.all([alphaLoad, betaLoad])
-
-  assert.equal(appliedActive.some((sessions) => sessions[0] === 'active-alpha'), false)
-
-  await loader.refreshActive()
-  assert.deepEqual(appliedActive.at(-1), ['active-beta'])
+  assert.deepEqual(activeKeys, ['alpha'])
 })
 
 test('preserves the previous active state when a refresh fails', async () => {
@@ -242,10 +369,66 @@ test('does not launch work for a blank key', async () => {
   })
 
   await loader.load('')
+  await loader.refreshSessions()
 
   assert.equal(await loader.refreshActive(), null)
   assert.equal(listCalls, 0)
   assert.equal(activeCalls, 0)
+})
+
+test('refreshes sessions from an active callback without recursive active work', async () => {
+  const appliedSessions = []
+  let listCalls = 0
+  let activeCalls = 0
+  let reconciliation
+  let loader
+  loader = createHistoryLoader({
+    listSessions: async () => {
+      listCalls += 1
+      return [`sessions-${listCalls}`]
+    },
+    onSessions: (sessions) => appliedSessions.push(sessions),
+    afterListRender: () => {},
+    listActive: async () => {
+      activeCalls += 1
+      return ['missing-session']
+    },
+    onActive: () => {
+      reconciliation = loader.refreshSessions()
+    },
+  })
+
+  assert.equal(typeof loader.refreshSessions, 'function')
+  await loader.load('alpha')
+  await reconciliation
+
+  assert.equal(listCalls, 2)
+  assert.equal(activeCalls, 1)
+  assert.deepEqual(appliedSessions, [['sessions-1'], ['sessions-2']])
+})
+
+test('refreshSessions updates the current list without starting active work', async () => {
+  let listCalls = 0
+  let activeCalls = 0
+  const loader = createHistoryLoader({
+    listSessions: async () => {
+      listCalls += 1
+      return []
+    },
+    onSessions: () => {},
+    afterListRender: () => {},
+    listActive: async () => {
+      activeCalls += 1
+      return []
+    },
+    onActive: () => {},
+  })
+
+  await loader.load('alpha')
+  await loader.refreshSessions()
+
+  assert.equal(listCalls, 2)
+  assert.equal(activeCalls, 1)
 })
 
 test('reports only current list and paint errors', async () => {
