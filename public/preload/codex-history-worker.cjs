@@ -269,7 +269,9 @@ function loadActiveSessions(input = {}, deps = {}) {
   const readRows = deps.readSqliteRows || readSqliteRows
   const logRows = readRows(input.logsDbPath, LOG_SQL, deps)
   const threadRows = readRows(input.stateDbPath, THREAD_SQL, deps)
-  if (logRows === null || threadRows === null) return []
+  if (logRows === null || threadRows === null) {
+    throw new Error('Codex active session database unavailable')
+  }
 
   const kill = deps.kill || process.kill.bind(process)
   const isPidAlive = deps.isPidAlive || ((pid) => defaultIsPidAlive(pid, kill))

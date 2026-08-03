@@ -2,6 +2,8 @@ const assert = require('node:assert/strict')
 const path = require('node:path')
 const test = require('node:test')
 
+const { runNodeJson } = require('../public/preload/async-child.cjs')
+
 const {
   HISTORY_SQL,
   LOG_SQL,
@@ -237,7 +239,7 @@ test('prefers SQLite history rows and filters them before returning', () => {
   assert.deepEqual(sqlCalls, [['state.sqlite', HISTORY_SQL]])
 })
 
-test('loads active rows with the active SQL queries and treats unavailable data as empty', () => {
+test('loads active rows with the active SQL queries', () => {
   const calls = []
   const sessions = loadActiveSessions(
     {
@@ -263,12 +265,78 @@ test('loads active rows with the active SQL queries and treats unavailable data 
     ['logs.sqlite', LOG_SQL],
     ['state.sqlite', THREAD_SQL],
   ])
-  assert.deepEqual(
-    loadActiveSessions(
-      { cwd: '/work/alpha', platform: 'linux', logsDbPath: 'logs.sqlite', stateDbPath: 'state.sqlite' },
-      { readSqliteRows: () => null },
-    ),
-    [],
+})
+
+test('rejects active snapshots when either required database is unavailable', () => {
+  const input = {
+    cwd: '/work/alpha',
+    platform: 'linux',
+    logsDbPath: 'logs.sqlite',
+    stateDbPath: 'state.sqlite',
+  }
+
+  for (const unavailableSql of [LOG_SQL, THREAD_SQL]) {
+    assert.throws(
+      () => loadActiveSessions(input, {
+        readSqliteRows: (_dbPath, sql) => sql === unavailableSql ? null : [],
+      }),
+      /Codex active session database unavailable/,
+    )
+  }
+})
+
+test('returns an authoritative empty active snapshot when both queries succeed empty', () => {
+  const calls = []
+  const sessions = loadActiveSessions(
+    { cwd: '/work/alpha', platform: 'linux', logsDbPath: 'logs.sqlite', stateDbPath: 'state.sqlite' },
+    { readSqliteRows: (dbPath, sql) => { calls.push([dbPath, sql]); return [] } },
+  )
+
+  assert.deepEqual(sessions, [])
+  assert.deepEqual(calls, [
+    ['logs.sqlite', LOG_SQL],
+    ['state.sqlite', THREAD_SQL],
+  ])
+})
+
+test('run propagates active database failures without writing JSON', () => {
+  const originalWrite = process.stdout.write
+  let stdout = ''
+  process.stdout.write = (chunk) => {
+    stdout += String(chunk)
+    return true
+  }
+
+  try {
+    assert.throws(
+      () => run(
+        'active',
+        { cwd: '/work/alpha', platform: 'linux', logsDbPath: 'logs.sqlite', stateDbPath: 'state.sqlite' },
+        { readSqliteRows: () => null },
+      ),
+      /Codex active session database unavailable/,
+    )
+  } finally {
+    process.stdout.write = originalWrite
+  }
+
+  assert.equal(stdout, '')
+})
+
+test('the async child runner rejects an active snapshot with missing databases', async () => {
+  const workerPath = path.resolve(__dirname, '..', 'public', 'preload', 'codex-history-worker.cjs')
+  const missingDir = path.join(__dirname, `missing-codex-worker-db-${process.pid}`)
+  const input = {
+    cwd: '/work/alpha',
+    platform: 'linux',
+    logsDbPath: path.join(missingDir, 'logs.sqlite'),
+    stateDbPath: path.join(missingDir, 'state.sqlite'),
+  }
+  const script = `const worker=require(${JSON.stringify(workerPath)});worker.run('active',${JSON.stringify(input)})`
+
+  await assert.rejects(
+    runNodeJson(script, { timeoutMs: 5000 }),
+    /Codex active session database unavailable/,
   )
 })
 
