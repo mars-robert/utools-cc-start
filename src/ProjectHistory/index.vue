@@ -405,6 +405,7 @@ const load = () => {
   }
   if (isCodexHistory.value) {
     memories.value = []
+    sessions.value = []
     void getCodexHistoryLoader().load(p.cwd)
     return
   }
@@ -826,7 +827,7 @@ const reloadSessions = () => {
   const p = props.project
   if (!p || (isCodexHistory.value ? !p.cwd : !p.dirName)) return
   if (isCodexHistory.value) {
-    void getCodexHistoryLoader().load(p.cwd)
+    void getCodexHistoryLoader().refreshSessions()
     return
   }
   try { sessions.value = window.services.listProjectSessions(p.dirName) || [] } catch (_) { /* 失败则保持原列表 */ }
