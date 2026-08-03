@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { marked } from 'marked'
 import { useFind } from './useFind'
+import { createHistoryLoader } from './load-core'
 import { SKINS, isKnownSkin } from '../theme-skins'
 
 const props = defineProps<{
@@ -361,6 +362,31 @@ const flatItems = computed(() => [
   ...filteredSessions.value.map((s) => ({ type: 'session', id: s.sessionId, raw: s }))
 ])
 
+let codexHistoryLoader: ReturnType<typeof createHistoryLoader> | null = null
+const getCodexHistoryLoader = () => {
+  if (!codexHistoryLoader) {
+    codexHistoryLoader = createHistoryLoader({
+      listSessions: (cwd: string) => window.services.listCodexProjectSessionsAsync(cwd),
+      listActive: (cwd: string) => window.services.listActiveCodexSessionsAsync(cwd),
+      afterListRender: async () => {
+        await nextTick()
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      },
+      onSessions: (list: any[]) => {
+        sessions.value = list
+        if (narrow.value && list.length && !selected.value) {
+          requestAnimationFrame(() => { if (!selected.value) showList.value = true })
+        }
+      },
+      onActive: (list: any[]) => applyActiveSessions(list),
+      onListError: (err: any) => {
+        error.value = err && err.message ? err.message : String(err)
+      }
+    })
+  }
+  return codexHistoryLoader
+}
+
 const load = () => {
   error.value = ''
   stopPoll()
@@ -371,12 +397,21 @@ const load = () => {
   subDetail.value = null
   selectedSession.value = null
   const p = props.project
-  if (!p || (isCodexHistory.value ? !p.cwd : !p.dirName)) { memories.value = []; sessions.value = []; return }
+  if (!p || (isCodexHistory.value ? !p.cwd : !p.dirName)) {
+    codexHistoryLoader?.invalidate()
+    memories.value = []
+    sessions.value = []
+    return
+  }
+  if (isCodexHistory.value) {
+    memories.value = []
+    void getCodexHistoryLoader().load(p.cwd)
+    return
+  }
+  codexHistoryLoader?.invalidate()
   try {
-    memories.value = isCodexHistory.value ? [] : (window.services.listProjectMemories(p.dirName) || [])
-    sessions.value = isCodexHistory.value
-      ? (window.services.listCodexProjectSessions(p.cwd) || [])
-      : (window.services.listProjectSessions(p.dirName) || [])
+    memories.value = window.services.listProjectMemories(p.dirName) || []
+    sessions.value = window.services.listProjectSessions(p.dirName) || []
     refreshActive()
   } catch (err: any) {
     error.value = err && err.message ? err.message : String(err)
@@ -790,17 +825,15 @@ const toggleAutoRefresh = () => {
 const reloadSessions = () => {
   const p = props.project
   if (!p || (isCodexHistory.value ? !p.cwd : !p.dirName)) return
-  try { sessions.value = isCodexHistory.value ? (window.services.listCodexProjectSessions(p.cwd) || []) : (window.services.listProjectSessions(p.dirName) || []) } catch (_) { /* 失败则保持原列表 */ }
+  if (isCodexHistory.value) {
+    void getCodexHistoryLoader().load(p.cwd)
+    return
+  }
+  try { sessions.value = window.services.listProjectSessions(p.dirName) || [] } catch (_) { /* 失败则保持原列表 */ }
 }
 
-// 刷新本项目活跃 session 集合；若当前打开会话的存活态翻转则联动启停实时刷新
-const refreshActive = () => {
-  try {
-    const list = isCodexHistory.value
-      ? (window.services.listActiveCodexSessions(props.project?.cwd) || [])
-      : (window.services.listActiveSessions(props.project?.cwd) || [])
-    activeIds.value = new Set(list.map((a: any) => a.sessionId))
-  } catch (_) { activeIds.value = new Set() }
+const applyActiveSessions = (list: any[]) => {
+  activeIds.value = new Set(list.map((a: any) => a.sessionId))
   // 启动新会话时活跃集会先于列表更新：出现列表中尚无的活跃 session → 重载列表使其自动出现
   const ids = new Set(sessions.value.map((s: any) => s.sessionId))
   if ([...activeIds.value].some((id) => !ids.has(id))) reloadSessions()
@@ -813,6 +846,19 @@ const refreshActive = () => {
       autoRefresh.value = live
       if (live) { startPoll(); refreshSession() } else stopPoll()
     }
+  }
+}
+
+// 刷新本项目活跃 session 集合；若当前打开会话的存活态翻转则联动启停实时刷新
+const refreshActive = () => {
+  if (isCodexHistory.value) {
+    if (props.project?.cwd) void getCodexHistoryLoader().refreshActive()
+    return
+  }
+  try {
+    applyActiveSessions(window.services.listActiveSessions(props.project?.cwd) || [])
+  } catch (_) {
+    applyActiveSessions([])
   }
 }
 const stopLiveTimer = () => {
@@ -1195,6 +1241,7 @@ onMounted(() => {
   mqlDark.addEventListener('change', onOsScheme)
 })
 onUnmounted(() => {
+  codexHistoryLoader?.invalidate()
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('resize', onResize)
   if (mqlDark) mqlDark.removeEventListener('change', onOsScheme)
