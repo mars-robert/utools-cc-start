@@ -14,17 +14,25 @@ function deferred () {
 }
 
 test('paints sessions before applying active sessions', async () => {
+  const paint = deferred()
+  const paintStarted = deferred()
   const active = deferred()
   const activeStarted = deferred()
   const events = []
+  let activeRequestStarted = false
   const loader = createHistoryLoader({
     listSessions: async (key) => {
       assert.equal(key, 'alpha')
       return ['session-alpha']
     },
     onSessions: (sessions) => events.push(['sessions', sessions]),
-    afterListRender: () => events.push(['paint']),
+    afterListRender: () => {
+      events.push(['paint'])
+      paintStarted.resolve()
+      return paint.promise
+    },
     listActive: (key) => {
+      activeRequestStarted = true
       events.push(['active-start', key])
       activeStarted.resolve()
       return active.promise
@@ -33,6 +41,16 @@ test('paints sessions before applying active sessions', async () => {
   })
 
   const loading = loader.load('alpha')
+  await paintStarted.promise
+  await Promise.resolve()
+
+  assert.deepEqual(events, [
+    ['sessions', ['session-alpha']],
+    ['paint'],
+  ])
+  assert.equal(activeRequestStarted, false)
+
+  paint.resolve()
   await activeStarted.promise
 
   assert.deepEqual(events, [
@@ -40,6 +58,7 @@ test('paints sessions before applying active sessions', async () => {
     ['paint'],
     ['active-start', 'alpha'],
   ])
+  assert.equal(events.some(([event]) => event === 'active'), false)
 
   active.resolve(['active-alpha'])
   await loading
