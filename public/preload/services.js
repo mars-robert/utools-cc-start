@@ -12,6 +12,10 @@ function loadActiveSessions () {
   return require('./active-sessions.cjs')
 }
 
+function loadAsyncChildRunner () {
+  return require('./async-child.cjs')
+}
+
 // 惰性加载环境配置，避免预加载模块初始化时产生额外依赖和文件系统访问
 function loadEnvConfig () {
   return require('./env-config-new.js')
@@ -854,6 +858,28 @@ function listCodexProjectSessions (cwd) {
   return sessions
 }
 
+function codexHistoryWorkerScript (mode, cwd) {
+  const workerPath = path.resolve(__dirname, 'codex-history-worker.cjs')
+  const input = {
+    cwd,
+    platform: process.platform,
+    stateDbPath: getCodexStateDbPath(),
+    logsDbPath: getCodexLogsDbPath(),
+    sessionsDir: getCodexSessionsDir()
+  }
+  return `const worker=require(${JSON.stringify(workerPath)});worker.run(${JSON.stringify(mode)},${JSON.stringify(input)})`
+}
+
+async function listCodexProjectSessionsAsync (cwd) {
+  if (typeof cwd !== 'string' || !cwd.trim()) return []
+  const rows = await loadAsyncChildRunner().runNodeJson(codexHistoryWorkerScript('history', cwd))
+  if (!Array.isArray(rows)) return []
+  return rows
+    .map((row) => codexSessionFromThreadRow(row))
+    .filter(Boolean)
+    .sort((a, b) => b.mtime - a.mtime)
+}
+
 function readCodexActiveLogRowsFromLogsDb () {
   const dbPath = getCodexLogsDbPath()
   try {
@@ -950,6 +976,12 @@ function listActiveCodexSessions (cwd) {
     bySession.set(sessionId, { sessionId, status: 'running', pid })
   }
   return [...bySession.values()]
+}
+
+async function listActiveCodexSessionsAsync (cwd) {
+  if (typeof cwd !== 'string' || !cwd.trim()) return []
+  const sessions = await loadAsyncChildRunner().runNodeJson(codexHistoryWorkerScript('active', cwd))
+  return Array.isArray(sessions) ? sessions : []
 }
 
 function findCodexThreadRow (cwd, sessionId) {
@@ -3192,9 +3224,11 @@ window.services = {
   // List Codex projects discovered from ~/.codex/sessions session metadata.
   listCodexProjects,
   listCodexProjectSessions,
+  listCodexProjectSessionsAsync,
   readCodexSession,
   statCodexSession,
   listActiveCodexSessions,
+  listActiveCodexSessionsAsync,
   parseCodexSession,
   exportCodexSession,
   exportCodexSessionToFile,

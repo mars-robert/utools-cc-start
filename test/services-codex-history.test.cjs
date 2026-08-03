@@ -1,6 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const path = require('node:path')
+const vm = require('node:vm')
 const { loadPreload } = require('./helpers/load-preload.cjs')
 
 const HOME = 'C:\\Users\\tester'
@@ -98,9 +99,10 @@ function codexSessionWithInjectedContext ({ id, cwd }) {
   ].join('\n')
 }
 
-function makeServices ({ rows = [], logRows = [], files = {}, mtimes = {}, existing = [], readdir, readFile, stat, sqlite = true, alivePids = [], spawnSync } = {}) {
+function makeServices ({ rows = [], logRows = [], files = {}, mtimes = {}, existing = [], readdir, readFile, stat, sqlite = true, alivePids = [], spawnSync, runNodeJson } = {}) {
   const alivePidSet = new Set(alivePids)
   const modules = {}
+  if (runNodeJson) modules['./async-child.cjs'] = { runNodeJson }
   if (sqlite) {
     modules['node:sqlite'] = {
       DatabaseSync: class {
@@ -147,6 +149,144 @@ function makeServices ({ rows = [], logRows = [], files = {}, mtimes = {}, exist
     modules
   })
 }
+
+test('listCodexProjectSessionsAsync runs the history worker and maps rows by descending recency', async () => {
+  const cwd = "D:\\code\\alpha';globalThis.injected=true;//"
+  const oldFile = path.join(HOME, '.codex', 'sessions', '2026', '07', '30', 'rollout-old.jsonl')
+  const newFile = path.join(HOME, '.codex', 'sessions', '2026', '07', '31', 'rollout-new.jsonl')
+  const workerCalls = []
+  let runnerCalls = 0
+  const rows = [
+    { id: 'old', rollout_path: oldFile, title: 'Old', recency_at_ms: 1000 },
+    null,
+    { id: '', rollout_path: oldFile, title: 'Missing id', recency_at_ms: 3000 },
+    {
+      id: 'new',
+      rollout_path: newFile,
+      title: 'New title',
+      recency_at_ms: 4000,
+      git_branch: 'main',
+      git_sha: 'abcdef1234567890',
+      cli_version: '0.146.0',
+      model: 'gpt-5.5',
+      reasoning_effort: 'high',
+      tokens_used: 1234567,
+      approval_mode: 'never',
+      sandbox_policy: '{"type":"disabled"}'
+    }
+  ]
+  let workerSandbox
+  const { services } = makeServices({
+    runNodeJson: async (script) => {
+      runnerCalls++
+      workerSandbox = {
+        require: (modulePath) => ({
+          run: (mode, input) => workerCalls.push({ modulePath, mode, input })
+        })
+      }
+      vm.runInNewContext(script, workerSandbox)
+      return rows
+    }
+  })
+
+  const sessions = await services.listCodexProjectSessionsAsync(cwd)
+
+  assert.equal(runnerCalls, 1)
+  assert.equal(workerCalls.length, 1)
+  assert.equal(workerCalls[0].modulePath, path.resolve(__dirname, '..', 'public', 'preload', 'codex-history-worker.cjs'))
+  assert.equal(workerCalls[0].mode, 'history')
+  assert.deepEqual(JSON.parse(JSON.stringify(workerCalls[0].input)), {
+    cwd,
+    platform: 'win32',
+    stateDbPath: STATE_DB,
+    logsDbPath: LOGS_DB,
+    sessionsDir: path.join(HOME, '.codex', 'sessions')
+  })
+  assert.equal(workerSandbox.injected, undefined)
+  assert.deepEqual(JSON.parse(JSON.stringify(sessions)), [
+    {
+      sessionId: 'new',
+      title: 'New title',
+      mtime: 4000,
+      size: 0,
+      rolloutPath: newFile,
+      gitBranch: 'main',
+      gitSha: 'abcdef1234567890',
+      version: '0.146.0',
+      model: 'gpt-5.5',
+      reasoningEffort: 'high',
+      tokensUsed: 1234567,
+      approvalMode: 'never',
+      sandboxPolicy: '{"type":"disabled"}'
+    },
+    {
+      sessionId: 'old',
+      title: 'Old',
+      mtime: 1000,
+      size: 0,
+      rolloutPath: oldFile,
+      gitBranch: '',
+      gitSha: '',
+      version: '',
+      model: '',
+      reasoningEffort: '',
+      tokensUsed: 0,
+      approvalMode: '',
+      sandboxPolicy: ''
+    }
+  ])
+})
+
+test('listActiveCodexSessionsAsync returns the active worker array', async () => {
+  const active = [{ sessionId: 'alpha-live', status: 'running', pid: 1234 }]
+  const workerCalls = []
+  const { services } = makeServices({
+    runNodeJson: async (script) => {
+      vm.runInNewContext(script, {
+        require: () => ({
+          run: (mode, input) => workerCalls.push({ mode, input })
+        })
+      })
+      return active
+    }
+  })
+
+  const sessions = await services.listActiveCodexSessionsAsync('D:\\code\\alpha')
+
+  assert.equal(workerCalls.length, 1)
+  assert.equal(workerCalls[0].mode, 'active')
+  assert.deepEqual(JSON.parse(JSON.stringify(sessions)), active)
+})
+
+test('async Codex history APIs propagate runner failures without synchronous fallback', async () => {
+  const failure = new Error('worker failed')
+  let syncCalls = 0
+  const { services } = makeServices({
+    runNodeJson: async () => { throw failure },
+    spawnSync: () => {
+      syncCalls++
+      return { status: 0, stdout: '[]', stderr: '' }
+    }
+  })
+
+  await assert.rejects(services.listCodexProjectSessionsAsync('D:\\code\\alpha'), failure)
+  await assert.rejects(services.listActiveCodexSessionsAsync('D:\\code\\alpha'), failure)
+  assert.equal(syncCalls, 0)
+})
+
+test('async Codex history APIs return empty for blank cwd without launching the worker', async () => {
+  let runnerCalls = 0
+  const { services } = makeServices({
+    runNodeJson: async () => {
+      runnerCalls++
+      return [{ unexpected: true }]
+    }
+  })
+
+  assert.deepEqual(JSON.parse(JSON.stringify(await services.listCodexProjectSessionsAsync('  '))), [])
+  assert.deepEqual(JSON.parse(JSON.stringify(await services.listActiveCodexSessionsAsync(null))), [])
+  assert.equal(runnerCalls, 0)
+})
 
 test('listCodexProjectSessions groups real threads by cwd and sorts by recency', () => {
   const alpha = 'D:\\code\\alpha'
