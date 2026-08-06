@@ -40,6 +40,35 @@ test('parses JSON stdout from a successful child', async () => {
   ])
 })
 
+test('pipes optional stdin to the child', async () => {
+  const child = createChild()
+  child.stdin = new PassThrough()
+  child.stdin.setEncoding('utf8')
+  let input = ''
+  child.stdin.on('data', (chunk) => { input += chunk })
+  let spawnArgs
+
+  const resultPromise = runNodeJson('process.stdout.write("[]")', {
+    stdin: 'trusted worker source',
+    spawn(...args) {
+      spawnArgs = args
+      return child
+    },
+  })
+
+  child.stdout.end('[]')
+  child.stderr.end()
+  child.emit('close', 0, null)
+
+  assert.deepEqual(await resultPromise, [])
+  assert.equal(input, 'trusted worker source')
+  assert.deepEqual(spawnArgs, [
+    'node',
+    ['-e', 'process.stdout.write("[]")'],
+    { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
+  ])
+})
+
 test('rejects a non-zero exit with stderr and the exit code', async () => {
   const child = createChild()
   const resultPromise = runNodeJson('ignored', { spawn: () => child })

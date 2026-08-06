@@ -7,6 +7,8 @@ function runNodeJson(script, options = {}) {
   const spawn = options.spawn || defaultSpawn
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
+  const hasStdin = Object.prototype.hasOwnProperty.call(options, 'stdin')
+  const stdin = hasStdin ? String(options.stdin) : null
 
   return new Promise((resolve, reject) => {
     let child
@@ -52,7 +54,7 @@ function runNodeJson(script, options = {}) {
     try {
       child = spawn('node', ['-e', script], {
         windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [hasStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       })
     } catch (error) {
       settle(error instanceof Error ? error : new Error(String(error)))
@@ -65,9 +67,14 @@ function runNodeJson(script, options = {}) {
       !child.stdout ||
       typeof child.stdout.on !== 'function' ||
       !child.stderr ||
-      typeof child.stderr.on !== 'function'
+      typeof child.stderr.on !== 'function' ||
+      (hasStdin && (
+        !child.stdin ||
+        typeof child.stdin.on !== 'function' ||
+        typeof child.stdin.end !== 'function'
+      ))
     ) {
-      killWithError(new Error('Node child process did not provide stdout and stderr streams'))
+      killWithError(new Error('Node child process did not provide the required stdio streams'))
       return
     }
 
@@ -107,6 +114,17 @@ function runNodeJson(script, options = {}) {
         settle(parseError)
       }
     })
+
+    if (hasStdin) {
+      child.stdin.on('error', (error) => {
+        settle(error instanceof Error ? error : new Error(String(error)))
+      })
+      try {
+        child.stdin.end(stdin)
+      } catch (error) {
+        settle(error instanceof Error ? error : new Error(String(error)))
+      }
+    }
   })
 }
 
