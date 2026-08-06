@@ -1,5 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const { EventEmitter } = require('node:events')
 const path = require('node:path')
 const vm = require('node:vm')
 const { loadPreload } = require('./helpers/load-preload.cjs')
@@ -7,6 +9,8 @@ const { loadPreload } = require('./helpers/load-preload.cjs')
 const HOME = 'C:\\Users\\tester'
 const STATE_DB = path.join(HOME, '.codex', 'state_5.sqlite')
 const LOGS_DB = path.join(HOME, '.codex', 'logs_2.sqlite')
+const WORKER_PATH = path.resolve(__dirname, '..', 'public', 'preload', 'codex-history-worker.cjs')
+const WORKER_SOURCE = fs.readFileSync(WORKER_PATH, 'utf8')
 
 function codexLine (obj) {
   return JSON.stringify(obj)
@@ -131,6 +135,7 @@ function makeServices ({ rows = [], logRows = [], files = {}, mtimes = {}, exist
     exists: (p) => String(p) === STATE_DB || (sqlite && String(p) === LOGS_DB) || existing.includes(String(p)) || Object.prototype.hasOwnProperty.call(files, String(p)),
     readFile: readFile || ((p) => {
       const key = String(p)
+      if (key === WORKER_PATH) return WORKER_SOURCE
       if (Object.prototype.hasOwnProperty.call(files, key)) return files[key]
       throw new Error('ENOENT: ' + key)
     }),
@@ -154,7 +159,6 @@ test('listCodexProjectSessionsAsync runs the history worker and maps rows by des
   const cwd = "D:\\code\\alpha';globalThis.injected=true;//"
   const oldFile = path.join(HOME, '.codex', 'sessions', '2026', '07', '30', 'rollout-old.jsonl')
   const newFile = path.join(HOME, '.codex', 'sessions', '2026', '07', '31', 'rollout-new.jsonl')
-  const workerCalls = []
   let runnerCalls = 0
   const rows = [
     { id: 'old', rollout_path: oldFile, title: 'Old', recency_at_ms: 1000 },
@@ -175,16 +179,24 @@ test('listCodexProjectSessionsAsync runs the history worker and maps rows by des
       sandbox_policy: '{"type":"disabled"}'
     }
   ]
+  const workerSource = 'module.exports.run = (mode, input) => { globalThis.workerCall = { mode, input } }'
+  let workerRequest
   let workerSandbox
   const { services } = makeServices({
-    runNodeJson: async (script) => {
+    readFile: (filePath) => {
+      assert.equal(String(filePath), WORKER_PATH)
+      return workerSource
+    },
+    runNodeJson: async (script, options) => {
       runnerCalls++
-      workerSandbox = {
-        require: (modulePath) => ({
-          run: (mode, input) => workerCalls.push({ modulePath, mode, input })
-        })
-      }
+      workerRequest = { script, options }
+      assert.equal(options?.stdin, workerSource)
+      const stdin = new EventEmitter()
+      stdin.setEncoding = () => {}
+      workerSandbox = { process: { stdin }, require }
       vm.runInNewContext(script, workerSandbox)
+      stdin.emit('data', options.stdin)
+      stdin.emit('end')
       return rows
     }
   })
@@ -192,17 +204,17 @@ test('listCodexProjectSessionsAsync runs the history worker and maps rows by des
   const sessions = await services.listCodexProjectSessionsAsync(cwd)
 
   assert.equal(runnerCalls, 1)
-  assert.equal(workerCalls.length, 1)
-  assert.equal(workerCalls[0].modulePath, path.resolve(__dirname, '..', 'public', 'preload', 'codex-history-worker.cjs'))
-  assert.equal(workerCalls[0].mode, 'history')
-  assert.deepEqual(JSON.parse(JSON.stringify(workerCalls[0].input)), {
+  assert.equal(workerRequest.options.stdin, workerSource)
+  assert.doesNotMatch(workerRequest.script, /require\([^\n]*codex-history-worker\.cjs/)
+  assert.equal(workerSandbox.injected, undefined)
+  assert.equal(workerSandbox.workerCall.mode, 'history')
+  assert.deepEqual(JSON.parse(JSON.stringify(workerSandbox.workerCall.input)), {
     cwd,
     platform: 'win32',
     stateDbPath: STATE_DB,
     logsDbPath: LOGS_DB,
     sessionsDir: path.join(HOME, '.codex', 'sessions')
   })
-  assert.equal(workerSandbox.injected, undefined)
   assert.deepEqual(JSON.parse(JSON.stringify(sessions)), [
     {
       sessionId: 'new',
@@ -239,22 +251,19 @@ test('listCodexProjectSessionsAsync runs the history worker and maps rows by des
 
 test('listActiveCodexSessionsAsync returns the active worker array', async () => {
   const active = [{ sessionId: 'alpha-live', status: 'running', pid: 1234 }]
-  const workerCalls = []
+  let workerRequest
   const { services } = makeServices({
-    runNodeJson: async (script) => {
-      vm.runInNewContext(script, {
-        require: () => ({
-          run: (mode, input) => workerCalls.push({ mode, input })
-        })
-      })
+    runNodeJson: async (script, options) => {
+      workerRequest = { script, options }
       return active
     }
   })
 
   const sessions = await services.listActiveCodexSessionsAsync('D:\\code\\alpha')
 
-  assert.equal(workerCalls.length, 1)
-  assert.equal(workerCalls[0].mode, 'active')
+  assert.equal(workerRequest.options.stdin, WORKER_SOURCE)
+  assert.match(workerRequest.script, /module\.exports\.run\("active"/)
+  assert.doesNotMatch(workerRequest.script, /require\([^\n]*codex-history-worker\.cjs/)
   assert.deepEqual(JSON.parse(JSON.stringify(sessions)), active)
 })
 

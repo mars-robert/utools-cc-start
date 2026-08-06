@@ -858,8 +858,9 @@ function listCodexProjectSessions (cwd) {
   return sessions
 }
 
-function codexHistoryWorkerScript (mode, cwd) {
+function codexHistoryWorkerRequest (mode, cwd) {
   const workerPath = path.resolve(__dirname, 'codex-history-worker.cjs')
+  const workerSource = fs.readFileSync(workerPath, 'utf8')
   const input = {
     cwd,
     platform: process.platform,
@@ -867,12 +868,24 @@ function codexHistoryWorkerScript (mode, cwd) {
     logsDbPath: getCodexLogsDbPath(),
     sessionsDir: getCodexSessionsDir()
   }
-  return `const worker=require(${JSON.stringify(workerPath)});worker.run(${JSON.stringify(mode)},${JSON.stringify(input)})`
+  const script = [
+    'const chunks = []',
+    "process.stdin.setEncoding('utf8')",
+    "process.stdin.on('data', (chunk) => chunks.push(chunk))",
+    "process.stdin.on('end', () => {",
+    '  const module = { exports: {} }',
+    "  const load = Function('exports', 'require', 'module', '__filename', '__dirname', chunks.join(''))",
+    `  load(module.exports, require, module, ${JSON.stringify(workerPath)}, ${JSON.stringify(path.dirname(workerPath))})`,
+    `  module.exports.run(${JSON.stringify(mode)}, ${JSON.stringify(input)})`,
+    '})'
+  ].join('\n')
+  return { script, stdin: workerSource }
 }
 
 async function listCodexProjectSessionsAsync (cwd) {
   if (typeof cwd !== 'string' || !cwd.trim()) return []
-  const rows = await loadAsyncChildRunner().runNodeJson(codexHistoryWorkerScript('history', cwd))
+  const request = codexHistoryWorkerRequest('history', cwd)
+  const rows = await loadAsyncChildRunner().runNodeJson(request.script, { stdin: request.stdin })
   if (!Array.isArray(rows)) return []
   return rows
     .map((row) => codexSessionFromThreadRow(row))
@@ -980,7 +993,8 @@ function listActiveCodexSessions (cwd) {
 
 async function listActiveCodexSessionsAsync (cwd) {
   if (typeof cwd !== 'string' || !cwd.trim()) return []
-  const sessions = await loadAsyncChildRunner().runNodeJson(codexHistoryWorkerScript('active', cwd))
+  const request = codexHistoryWorkerRequest('active', cwd)
+  const sessions = await loadAsyncChildRunner().runNodeJson(request.script, { stdin: request.stdin })
   return Array.isArray(sessions) ? sessions : []
 }
 
